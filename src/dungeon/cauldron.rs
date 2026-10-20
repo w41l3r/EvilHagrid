@@ -145,6 +145,12 @@ fn format_asrep_hash(fmt: HashFormat, user: &str, domain: &str, etype: i32, ciph
     }
 }
 
+/// Convenience wrapper for sorting_hat: roast a single username, return hashcat hash string.
+pub fn asrep_roast_single(username: &str, domain: &str, dc: Option<&str>) -> Result<String> {
+    let r = asrep_roast(username, domain, ETYPE_RC4_HMAC, dc, HashFormat::Hashcat)?;
+    Ok(r.hash)
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn parse_kirbi_identity(kirbi: &[u8]) -> Result<(String, String, MagicKey)> {

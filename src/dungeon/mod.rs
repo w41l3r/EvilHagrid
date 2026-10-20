@@ -10,6 +10,7 @@ pub mod mending;
 pub mod ministry;
 pub mod polyjuice_brew;
 pub mod potions;
+pub mod ldap_search;
 pub mod reaper;
 pub mod request_magic;
 pub mod wand_utils;

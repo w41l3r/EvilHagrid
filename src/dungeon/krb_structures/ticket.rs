@@ -62,6 +62,42 @@ pub struct ScrollVault {
 }
 
 impl ScrollVault {
+    pub fn decode(data: &[u8]) -> anyhow::Result<Self> {
+        let mut p = DerParser::new(data);
+        let raw = p.expect_tag(TAG_ENC_TICKET_PART)?;
+        let mut seq_p = DerParser::new(raw);
+        let mut inner = seq_p.enter_sequence()?;
+
+        let flags = inner.enter_ctx(0)?.read_bit_string_flags()?;
+        let session_key = {
+            let kb = inner.slice_ctx(1)?;
+            super::enc_types::MagicKey::decode(kb)?
+        };
+        let crealm = inner.enter_ctx(2)?.read_general_string()?;
+        let cname = {
+            let nb = inner.slice_ctx(3)?;
+            Glyph::decode(nb)?
+        };
+        // transited [4] — skip
+        if inner.peek_tag() == Some(ctx_tag(4)) { let _ = inner.read_tlv(); }
+        let auth_time = inner.enter_ctx(5)?.read_generalized_time()?;
+        let start_time = if inner.peek_tag() == Some(ctx_tag(6)) {
+            Some(inner.enter_ctx(6)?.read_generalized_time()?)
+        } else { None };
+        let end_time = inner.enter_ctx(7)?.read_generalized_time()?;
+        let renew_till = if inner.peek_tag() == Some(ctx_tag(8)) {
+            Some(inner.enter_ctx(8)?.read_generalized_time()?)
+        } else { None };
+        // caddr [9] — skip
+        if inner.peek_tag() == Some(ctx_tag(9)) { let _ = inner.read_tlv(); }
+        let auth_data = if inner.peek_tag() == Some(ctx_tag(10)) {
+            Some(inner.slice_ctx(10)?.to_vec())
+        } else { None };
+
+        Ok(ScrollVault { flags, session_key, crealm, cname, transited: Vec::new(),
+            auth_time, start_time, end_time, renew_till, caddr: None, auth_data })
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut inner = Vec::new();
         inner.extend_from_slice(&encode_ctx(0, &encode_bit_string_flags(self.flags)));
