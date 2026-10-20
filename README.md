@@ -135,6 +135,46 @@ Global flags available on any spell:
 
 ---
 
+## Rubeus Command Mapping
+
+Complete correspondence between Rubeus (C#) commands and EvilHagrid spells.
+
+| Rubeus Command | EvilHagrid Spell | Status | Notes |
+|----------------|-----------------|--------|-------|
+| `asktgt` | `accio-tgt` | ✅ Full | AS-REQ flow, preauth probe, ETYPE_INFO2 salt extraction |
+| `asktgs` | `accio-service` | ✅ Full | TGS-REQ with AP-REQ authenticator |
+| `kerberoast` | `roasting-feast` | ✅ Full | RC4 + AES hashes, hashcat/john output, delay |
+| `asreproast` | `preauth-feast` | ✅ Full | No-preauth AS-REQ, hashcat/john output |
+| `golden` | `elder-wand` | ✅ Full | PAC forging with KERB_VALIDATION_INFO + NDR |
+| `silver` | `dark-mark` | ✅ Full | Silver ticket with custom SPN |
+| `diamond` | `philosophers-stone` | ✅ Full | Request real TGT + PAC modification |
+| `ptt` | `portkey` | ✅ Full | `LsaCallAuthenticationPackage` — Windows only |
+| `purge` | `obliviate` | ✅ Full | `KerbPurgeTicketCacheExMessage` — Windows only |
+| `dump` | `pillage` | ✅ Full | Export .kirbi files — Windows only |
+| `triage` | `census` | ✅ Full | LSA (Windows) + ccache parser (Linux/macOS) |
+| `klist` | `manifest` | ⚙️ Stub | Verbose ticket listing — Windows only |
+| `s4u` | `polyjuice` | ✅ Full | S4U2Self + S4U2Proxy, PA-FOR-USER HMAC-MD5 |
+| `tgssub` | `imperius` | ✅ Full | sname substitution in existing ticket |
+| `renew` | `reparo` | ✅ Full | TGS-REQ with `KDC_OPT_RENEW` |
+| `describe` | `legilimens` | ✅ Full | Decode and display all ticket fields |
+| `hash` | `transfigure` | ✅ Full | NT hash, AES-128/256 string-to-key |
+| `changepw` | `alohomora` | ⚙️ Stub | RFC 3244 kpasswd (port 464) skeleton |
+| `brute` | `crucio` | ✅ Full | Per-user AS-REQ spray with delay |
+| `harvest` | `reaping` | ✅ Full | TGT loop with auto-renew |
+| `monitor` | `marauders-map` | ⚙️ Stub | Poll for new TGTs — Windows only |
+| `logonsessions` | `session-map` | ⚙️ Stub | `LsaEnumerateLogonSessions` — Windows only |
+| `currentluid` | `whomst` | ⚙️ Stub | Current session LUID — Windows only |
+| `createnetonly` | `fidelius` | ⚙️ Stub | `CreateProcessWithLogonW` — Windows only |
+| `kirbi2john` / `base64` | `muggle` | ✅ Full | kirbi ↔ binary ↔ base64 conversion |
+| `pkinit` | `philosophers-stone` / `key-ceremony` | ⚙️ Stub | PKINIT / Diffie-Hellman — not yet implemented |
+| `tgtdeleg` | `confundus` | ⚙️ Stub | Unconstrained delegation TGT — not yet implemented |
+| `asktgt` (with /getcredentials) | `sorting-hat` | ⚙️ Stub | LDAP scan for no-preauth accounts |
+| *(no equivalent)* | `convert-muggle` | ✅ Full | Raw AS-REP bytes → .kirbi |
+
+**Status legend:**  ✅ Full implementation &nbsp;·&nbsp; ⚙️ Stub (compiles, meaningful error, structure ready)
+
+---
+
 ## Examples
 
 ```bash
