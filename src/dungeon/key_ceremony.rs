@@ -1,7 +1,6 @@
 use anyhow::{bail, Result};
 use rand::random;
 use sha1::{Sha1, Digest as Sha1Digest};
-use sha2::Sha256;
 
 use crate::dungeon::krb_structures::*;
 use crate::dungeon::floo_network;
@@ -11,7 +10,7 @@ use crate::dungeon::request_magic::TgtTicket;
 // OIDs as byte arrays (content bytes only, without tag/length)
 const OID_EC_PUBLIC_KEY: &[u8]    = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
 const OID_P256: &[u8]             = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-const OID_SHA256: &[u8]           = &[0x60, 0x86, 0x48, 0x01, 0x86, 0xf8, 0x45, 0x04, 0x02, 0x01];
+const OID_SHA256: &[u8]           = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]; // 2.16.840.1.101.3.4.2.1
 const OID_ECDSA_SHA256: &[u8]     = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
 const OID_SIGNED_DATA: &[u8]      = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02];
 const OID_PKINIT_AUTH_DATA: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x02, 0x03, 0x01];
@@ -100,14 +99,6 @@ fn encode_oid(oid_bytes: &[u8]) -> Vec<u8> {
     v
 }
 
-fn encode_raw_integer(bytes: &[u8]) -> Vec<u8> {
-    // Wrap arbitrary bytes as a DER INTEGER TLV
-    let mut v = vec![0x02];
-    v.extend_from_slice(&encode_length(bytes.len()));
-    v.extend_from_slice(bytes);
-    v
-}
-
 fn build_pk_authenticator(now: &str, nonce: u32) -> Result<Vec<u8>> {
     let inner = [
         encode_ctx(0, &encode_integer(0)),                         // cusec
@@ -148,10 +139,6 @@ fn build_cms_signed_data(
 ) -> Result<Vec<u8>> {
     use p256::ecdsa::signature::Signer;
 
-    let mut hasher = Sha256::new();
-    hasher.update(auth_pack);
-    let digest = hasher.finalize();
-
     // encapContentInfo
     let enc_content = encode_sequence(&[
         encode_oid(OID_PKINIT_AUTH_DATA),
@@ -168,8 +155,8 @@ fn build_cms_signed_data(
         cert_info.serial_tlv.clone(),
     ].concat());
 
-    // signerInfo
-    let sig: p256::ecdsa::Signature = signing_key.sign(&digest);
+    // signerInfo — sign the full AuthPack (Signer<Signature> hashes with SHA-256 internally)
+    let sig: p256::ecdsa::Signature = signing_key.sign(auth_pack);
     let sig_bytes = sig.to_der().as_bytes().to_vec();
     let signer_info = encode_sequence(&[
         encode_integer(3),                                         // CMSVersion 3
@@ -231,10 +218,11 @@ fn scan_ec_point_in_bytes(data: &[u8]) -> Result<Vec<u8>> {
 // ── Key derivation (RFC 4556 §3.2.3.1, X9.42 KDF with SHA-1) ────────────────
 
 fn kdf_x9_42(z: &[u8], etype: i32, party_u_nonce: &[u8], party_v_nonce: &[u8]) -> Result<Vec<u8>> {
+    // OIDs: 1.2.840.113554.1.2.2.{etype} (MIT krb5 enctype OIDs)
     let (key_len, etype_oid): (usize, &[u8]) = match etype {
-        ETYPE_RC4_HMAC => (16, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02, 0x11]),
-        ETYPE_AES128_CTS_HMAC_SHA1_96 => (16, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02, 0x11]),
-        ETYPE_AES256_CTS_HMAC_SHA1_96 => (32, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02, 0x12]),
+        ETYPE_RC4_HMAC => (16, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02, 0x17]), // .23
+        ETYPE_AES128_CTS_HMAC_SHA1_96 => (16, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02, 0x11]), // .17
+        ETYPE_AES256_CTS_HMAC_SHA1_96 => (32, &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02, 0x12]), // .18
         _ => bail!("unsupported etype {} for PKINIT key derivation", etype),
     };
 

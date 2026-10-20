@@ -52,8 +52,13 @@ pub fn change_password(
     //  2-byte ap-req length
     //  ap-req bytes
     //  krb-priv bytes
-    let ap_req_len = ap_req.len() as u16;
-    let total = 6u16 + ap_req.len() as u16 + krb_priv.len() as u16;
+    let ap_req_len_usize = ap_req.len();
+    let total_usize = 6usize + ap_req.len() + krb_priv.len();
+    if total_usize > u16::MAX as usize {
+        bail!("kpasswd message too large ({} bytes)", total_usize);
+    }
+    let ap_req_len = ap_req_len_usize as u16;
+    let total = total_usize as u16;
     let mut msg = Vec::new();
     msg.extend_from_slice(&total.to_be_bytes());
     msg.extend_from_slice(&KPASSWD_VERSION.to_be_bytes());

