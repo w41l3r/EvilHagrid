@@ -75,6 +75,13 @@ fn md4_digest(data: &[u8]) -> Vec<u8> {
 // ── RC4-HMAC (etype 23) ───────────────────────────────────────────────────────
 
 pub fn rc4_hmac_encrypt(key: &[u8], key_usage: i32, plaintext: &[u8]) -> Vec<u8> {
+    // RFC 4757 / MS-KILE:
+    //   K1  = HMAC_MD5(key, LE32(usage))
+    //   data = confounder(8) || plaintext
+    //   CKSUM = HMAC_MD5(K1, data)          ← checksum over plaintext+confounder
+    //   K3  = HMAC_MD5(K1, CKSUM)           ← stream key derived from checksum
+    //   ciphertext = RC4(K3, data)
+    //   output = CKSUM(16) || ciphertext
     let usage_bytes = (key_usage as u32).to_le_bytes();
     let k1 = hmac_md5(key, &usage_bytes);
     let mut confounder = [0u8; 8];
@@ -82,9 +89,10 @@ pub fn rc4_hmac_encrypt(key: &[u8], key_usage: i32, plaintext: &[u8]) -> Vec<u8>
     rand::thread_rng().fill_bytes(&mut confounder);
     let mut data = confounder.to_vec();
     data.extend_from_slice(plaintext);
-    let ks = rc4_keystream(&hmac_md5(&k1, &confounder), data.len());
+    let checksum = hmac_md5(&k1, &data);
+    let k3 = hmac_md5(&k1, &checksum);
+    let ks = rc4_keystream(&k3, data.len());
     let ciphertext: Vec<u8> = data.iter().zip(ks).map(|(a, b)| a ^ b).collect();
-    let checksum = hmac_md5(&k1, &ciphertext);
     let mut out = checksum;
     out.extend_from_slice(&ciphertext);
     out
@@ -97,11 +105,12 @@ pub fn rc4_hmac_decrypt(key: &[u8], key_usage: i32, ciphertext_with_mac: &[u8]) 
     let k1 = hmac_md5(key, &usage_bytes);
     let k3 = hmac_md5(&k1, checksum);
     let ks = rc4_keystream(&k3, ciphertext.len());
-    let plaintext: Vec<u8> = ciphertext.iter().zip(ks).map(|(a, b)| a ^ b).collect();
-    let expected_mac = hmac_md5(&k1, ciphertext);
+    let plaintext_w_conf: Vec<u8> = ciphertext.iter().zip(ks).map(|(a, b)| a ^ b).collect();
+    // verify: HMAC_MD5(K1, confounder||plaintext) must match stored checksum
+    let expected_mac = hmac_md5(&k1, &plaintext_w_conf);
     if expected_mac != checksum { bail!("RC4-HMAC integrity check failed"); }
-    if plaintext.len() < 8 { bail!("plaintext too short after decrypt"); }
-    Ok(plaintext[8..].to_vec())
+    if plaintext_w_conf.len() < 8 { bail!("plaintext too short after decrypt"); }
+    Ok(plaintext_w_conf[8..].to_vec())
 }
 
 fn hmac_md5(key: &[u8], data: &[u8]) -> Vec<u8> {
@@ -135,10 +144,24 @@ fn aes256_ecb_block(key: &[u8; 32], block: &[u8; 16]) -> [u8; 16] {
     b.into()
 }
 
+fn aes256_ecb_block_decrypt(key: &[u8; 32], block: &[u8; 16]) -> [u8; 16] {
+    let cipher = Aes256::new(GenericArray::from_slice(key));
+    let mut b = GenericArray::clone_from_slice(block);
+    cipher.decrypt_block(&mut b);
+    b.into()
+}
+
 fn aes128_ecb_block(key: &[u8; 16], block: &[u8; 16]) -> [u8; 16] {
     let cipher = Aes128::new(GenericArray::from_slice(key));
     let mut b = GenericArray::clone_from_slice(block);
     cipher.encrypt_block(&mut b);
+    b.into()
+}
+
+fn aes128_ecb_block_decrypt(key: &[u8; 16], block: &[u8; 16]) -> [u8; 16] {
+    let cipher = Aes128::new(GenericArray::from_slice(key));
+    let mut b = GenericArray::clone_from_slice(block);
+    cipher.decrypt_block(&mut b);
     b.into()
 }
 
@@ -191,6 +214,11 @@ fn gcd(a: usize, b: usize) -> usize {
 fn rotate_bytes_right(input: &[u8], bytes: usize, bits: usize) -> Vec<u8> {
     let n = input.len();
     let mut out = vec![0u8; n];
+    if bits == 0 {
+        // avoid `u8 << 8` overflow: pure byte rotation
+        for i in 0..n { out[i] = input[(i + n - bytes) % n]; }
+        return out;
+    }
     for i in 0..n {
         let src = (i + n - bytes) % n;
         out[i] = (input[src] >> bits) | (input[(src + n - 1) % n] << (8 - bits));
@@ -369,15 +397,19 @@ fn cts_decrypt_aes256(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>> {
     }
     let last_block_size = data.len() % 16;
     let full_blocks = data.len() / 16;
-    // reconstruct standard CBC order for decryption
     let before_last_two = full_blocks.saturating_sub(1) * 16;
-    let mut reordered = data[..before_last_two].to_vec();
-    // the last partial block bytes complete the second-to-last ciphertext block
+    // Cn = data[before_last_two..+16] (the swapped-in full cipher block)
+    let cn: [u8; 16] = data[before_last_two..before_last_two + 16].try_into().unwrap();
+    // Raw-decrypt Cn to recover the last (16-L) bytes of Cn-1
+    let xn = aes256_ecb_block_decrypt(key, &cn);
+    // Reconstruct Cn-1: first L bytes from CTS tail, last 16-L bytes from xn
     let mut penultimate = [0u8; 16];
     penultimate[..last_block_size].copy_from_slice(&data[data.len() - last_block_size..]);
-    penultimate[last_block_size..].copy_from_slice(&data[before_last_two..][..16 - last_block_size]);
+    penultimate[last_block_size..].copy_from_slice(&xn[last_block_size..]);
+    // Reorder to standard CBC order: [C0..Cn-2, Cn-1, Cn]
+    let mut reordered = data[..before_last_two].to_vec();
     reordered.extend_from_slice(&penultimate);
-    reordered.extend_from_slice(&data[before_last_two..before_last_two + 16]);
+    reordered.extend_from_slice(&cn);
     let decrypted = aes256_cbc_decrypt(key, &iv, &reordered);
     Ok(decrypted[..before_last_two + 16 + last_block_size].to_vec())
 }
@@ -391,12 +423,14 @@ fn cts_decrypt_aes128(key: &[u8; 16], data: &[u8]) -> Result<Vec<u8>> {
     let last_block_size = data.len() % 16;
     let full_blocks = data.len() / 16;
     let before_last_two = full_blocks.saturating_sub(1) * 16;
-    let mut reordered = data[..before_last_two].to_vec();
+    let cn: [u8; 16] = data[before_last_two..before_last_two + 16].try_into().unwrap();
+    let xn = aes128_ecb_block_decrypt(key, &cn);
     let mut penultimate = [0u8; 16];
     penultimate[..last_block_size].copy_from_slice(&data[data.len() - last_block_size..]);
-    penultimate[last_block_size..].copy_from_slice(&data[before_last_two..][..16 - last_block_size]);
+    penultimate[last_block_size..].copy_from_slice(&xn[last_block_size..]);
+    let mut reordered = data[..before_last_two].to_vec();
     reordered.extend_from_slice(&penultimate);
-    reordered.extend_from_slice(&data[before_last_two..before_last_two + 16]);
+    reordered.extend_from_slice(&cn);
     let decrypted = aes128_cbc_decrypt(key, &iv, &reordered);
     Ok(decrypted[..before_last_two + 16 + last_block_size].to_vec())
 }

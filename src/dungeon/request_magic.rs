@@ -147,7 +147,7 @@ pub fn fetch_service_ticket(
     dc: Option<&str>,
 ) -> Result<TgsTicket> {
     // Parse TGT from kirbi
-    let (tgt_ticket, session_key) = parse_kirbi_tgt(tgt_kirbi)?;
+    let (tgt_ticket, session_key, cname) = parse_kirbi_tgt(tgt_kirbi)?;
     let nonce: u32 = random();
     let (svc, _host) = wand_utils::parse_spn(spn);
     let sname = if svc.to_lowercase() == "krbtgt" {
@@ -162,7 +162,7 @@ pub fn fetch_service_ticket(
     };
 
     // build AP-REQ authenticator
-    let ap_req = build_ap_req(&tgt_ticket, &session_key, nonce)?;
+    let ap_req = build_ap_req(&tgt_ticket, &session_key, &cname, nonce)?;
     let pa_tgs = Rune::tgs_req(&ap_req);
     let tgs_req = TomeRequest::new_tgs_req(domain, sname, &[request_etype], vec![pa_tgs], nonce);
 
@@ -213,16 +213,15 @@ fn parse_tgs_rep(data: &[u8], session_key: &MagicKey, spn: &str, domain: &str) -
     Ok(TgsTicket { kirbi, session_key: svc_session_key, service: spn.to_owned(), realm: domain.to_ascii_uppercase(), end_time })
 }
 
-fn build_ap_req(ticket: &Scroll, session_key: &MagicKey, nonce: u32) -> Result<Vec<u8>> {
+fn build_ap_req(ticket: &Scroll, session_key: &MagicKey, cname: &Glyph, nonce: u32) -> Result<Vec<u8>> {
     // Authenticator body
     let now = wand_utils::generalized_time_now();
-    // cutime microseconds — use 0 for simplicity
     let auth_inner = [
-        encode_ctx(0, &encode_uint32(5)),   // authenticator-vno
+        encode_ctx(0, &encode_uint32(5)),               // authenticator-vno
         encode_ctx(1, &encode_general_string(&ticket.realm)),
-        encode_ctx(2, &ticket.sname.encode()), // cname placeholder (sname is fine for TGS-REQ)
+        encode_ctx(2, &cname.encode()),                 // RFC 4120 §5.5.1: client's own principal
         encode_ctx(4, &encode_generalized_time(&now)),
-        encode_ctx(5, &encode_uint32(0)),   // cusec
+        encode_ctx(5, &encode_uint32(0)),               // cusec
     ]
     .concat();
     let authenticator_plain = tlv(TAG_AUTHENTICATOR, &encode_sequence(&auth_inner));
@@ -241,11 +240,16 @@ fn build_ap_req(ticket: &Scroll, session_key: &MagicKey, nonce: u32) -> Result<V
     Ok(tlv(TAG_AP_REQ, &encode_sequence(&ap_req_inner)))
 }
 
-pub fn parse_kirbi_tgt_pub(kirbi: &[u8]) -> Result<(Scroll, MagicKey)> {
+pub fn parse_kirbi_tgt_pub(kirbi: &[u8]) -> Result<(Scroll, MagicKey, Glyph)> {
     parse_kirbi_tgt(kirbi)
 }
 
-fn parse_kirbi_tgt(kirbi: &[u8]) -> Result<(Scroll, MagicKey)> {
+pub fn parse_kirbi_cname(kirbi: &[u8]) -> Result<Glyph> {
+    let (_, _, cname) = parse_kirbi_tgt(kirbi)?;
+    Ok(cname)
+}
+
+fn parse_kirbi_tgt(kirbi: &[u8]) -> Result<(Scroll, MagicKey, Glyph)> {
     // KRB-CRED: APPLICATION 22 SEQUENCE { pvno, msg-type, tickets, enc-part }
     let mut p = DerParser::new(kirbi);
     let raw = p.expect_tag(TAG_KRB_CRED)?;
@@ -282,7 +286,16 @@ fn parse_kirbi_tgt(kirbi: &[u8]) -> Result<(Scroll, MagicKey)> {
     let mut info_seq = ip.enter_sequence()?;
     let key_bytes = info_seq.slice_ctx(0)?;
     let session_key = MagicKey::decode(key_bytes)?;
-    Ok((ticket, session_key))
+    // skip realm [1] if present
+    if info_seq.peek_tag() == Some(ctx_tag(1)) { let _ = info_seq.read_tlv(); }
+    // read client principal name [2]
+    let cname = if info_seq.peek_tag() == Some(ctx_tag(2)) {
+        let b = info_seq.slice_ctx(2)?;
+        Glyph::decode(b).unwrap_or_else(|_| Glyph::new_principal(""))
+    } else {
+        Glyph::new_principal("")
+    };
+    Ok((ticket, session_key, cname))
 }
 
 fn extract_salt_from_error(err: &DarkProphecy, username: &str, domain: &str, etype: i32) -> String {

@@ -177,6 +177,8 @@ fn parse_kirbi_identity(kirbi: &[u8]) -> Result<(String, String, MagicKey)> {
 }
 
 fn build_tgs_ap_req_for_roast(kirbi: &[u8], session_key: &MagicKey, nonce: u32) -> Result<Vec<u8>> {
+    use crate::dungeon::request_magic::parse_kirbi_cname;
+
     // Parse ticket from kirbi
     let mut p = DerParser::new(kirbi);
     let raw = p.expect_tag(TAG_KRB_CRED)?;
@@ -193,11 +195,12 @@ fn build_tgs_ap_req_for_roast(kirbi: &[u8], session_key: &MagicKey, nonce: u32) 
     wrapped.extend_from_slice(ticket_bytes);
     let ticket = Scroll::decode_from_bytes(&wrapped)?;
 
+    let cname = parse_kirbi_cname(kirbi).unwrap_or_else(|_| Glyph::new_principal(""));
     let now = wand_utils::generalized_time_now();
     let auth_inner = [
         encode_ctx(0, &encode_uint32(5)),
         encode_ctx(1, &encode_general_string(&ticket.realm)),
-        encode_ctx(2, &ticket.sname.encode()),
+        encode_ctx(2, &cname.encode()),  // RFC 4120 §5.5.1: client's own principal
         encode_ctx(4, &encode_generalized_time(&now)),
         encode_ctx(5, &encode_uint32(0)),
     ]

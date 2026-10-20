@@ -98,7 +98,7 @@ fn forge_ticket_inner(bp: &TicketBlueprint, sname: &Glyph, srealm: &str, is_gold
         auth_data: Some(auth_data),
     };
     let enc_ticket_bytes = vault.encode();
-    let cipher = potions::enchant(bp.service_etype, &bp.service_key, KU_TGS_REP_ENC_PART_SESS, &enc_ticket_bytes)?;
+    let cipher = potions::enchant(bp.service_etype, &bp.service_key, KU_TICKET, &enc_ticket_bytes)?;
     let enc_part = SealedChamber::with_kvno(bp.service_etype, 3, cipher);
     let ticket = Scroll {
         tkt_vno: KRB5_PVNO,

@@ -32,6 +32,7 @@ pub const CKSUMTYPE_HMAC_SHA1_96_AES128: i32 = 15;
 pub const CKSUMTYPE_HMAC_SHA1_96_AES256: i32 = 16;
 
 // Key usage numbers (RFC 4120 §7.5.1)
+pub const KU_TICKET:                   i32 = 2; // Ticket enc-part (encrypted with server key)
 pub const KU_AS_REQ_PA_ENC_TIMESTAMP: i32 = 1;
 pub const KU_AS_REP_ENC_PART:         i32 = 3;
 pub const KU_TGS_REQ_AUTH_CKSUM:      i32 = 6;
@@ -101,6 +102,7 @@ pub const KDC_OPT_PROXY:        u32 = 0x0800_0000;
 pub const KDC_OPT_ALLOW_POSTDATE: u32 = 0x0400_0000;
 pub const KDC_OPT_POSTDATED:    u32 = 0x0200_0000;
 pub const KDC_OPT_RENEWABLE:    u32 = 0x0080_0000;
+pub const KDC_OPT_CNAME_IN_ADDL_TKT: u32 = 0x0002_0000; // MS-SFU S4U2Proxy
 pub const KDC_OPT_RENEWABLE_OK: u32 = 0x0000_0010;
 pub const KDC_OPT_ENC_TKT_IN_SKEY: u32 = 0x0000_0008;
 pub const KDC_OPT_RENEW:        u32 = 0x0000_0002;

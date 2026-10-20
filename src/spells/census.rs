@@ -64,6 +64,18 @@ fn render_ticket_table(
 
     let mut shown = 0usize;
     for session in &sessions {
+        // Apply /luid: filter (numeric sessions only — on Linux the luid is a file path)
+        if let Some(lf) = luid_filter {
+            let session_num: Option<u64> = if session.starts_with("0x") || session.starts_with("0X") {
+                u64::from_str_radix(&session[2..], 16).ok()
+            } else {
+                session.parse::<u64>().ok()
+            };
+            if let Some(sn) = session_num {
+                if sn != lf { continue; }
+            }
+        }
+
         // Collect tickets for this session
         let session_rows: Vec<&ministry::CachedTicketRow> = rows.iter()
             .filter(|r| &r.luid.as_str() == session)
