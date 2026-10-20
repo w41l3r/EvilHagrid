@@ -1,0 +1,66 @@
+use anyhow::Result;
+use std::collections::HashMap;
+
+pub trait Spell {
+    fn cast(&self, args: &HashMap<String, String>) -> Result<()>;
+    fn incantation(&self) -> &'static str;
+    fn grimoire(&self) -> &'static str;
+}
+
+pub mod accio_tgt;
+pub mod accio_service;
+pub mod roasting_feast;
+pub mod preauth_feast;
+pub mod pillage;
+pub mod census;
+pub mod manifest;
+pub mod elder_wand;
+pub mod dark_mark;
+pub mod philosophers_stone;
+pub mod portkey;
+pub mod obliviate;
+pub mod polyjuice;
+pub mod confundus;
+pub mod marauders_map;
+pub mod reaping;
+pub mod crucio;
+pub mod sorting_hat;
+pub mod legilimens;
+pub mod reparo;
+pub mod alohomora;
+pub mod transfigure;
+pub mod fidelius;
+pub mod imperius;
+pub mod muggle;
+pub mod convert_muggle;
+pub mod whomst;
+pub mod session_map;
+
+pub use accio_tgt::AccioTgt;
+pub use accio_service::AccioService;
+pub use roasting_feast::RoastingFeast;
+pub use preauth_feast::PreauthFeast;
+pub use pillage::Pillage;
+pub use census::Census;
+pub use manifest::Manifest;
+pub use elder_wand::ElderWand;
+pub use dark_mark::DarkMark;
+pub use philosophers_stone::PhilosophersStone;
+pub use portkey::Portkey;
+pub use obliviate::Obliviate;
+pub use polyjuice::Polyjuice;
+pub use confundus::Confundus;
+pub use marauders_map::MaraudersMap;
+pub use reaping::Reaping;
+pub use crucio::Crucio;
+pub use sorting_hat::SortingHat;
+pub use legilimens::Legilimens;
+pub use reparo::Reparo;
+pub use alohomora::Alohomora;
+pub use transfigure::Transfigure;
+pub use fidelius::Fidelius;
+pub use imperius::Imperius;
+pub use muggle::Muggle;
+pub use convert_muggle::ConvertMuggle;
+pub use whomst::Whomst;
+pub use session_map::SessionMap;
