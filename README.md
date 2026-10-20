@@ -1,14 +1,6 @@
-# EvilHagrid
+## Let's take care of Fluffy
 
-```
-  _____       _ _ _    _                     _     _
- | ____|_   _(_) | |  | | __ _  __ _ _ __  (_) __| |
- |  _| \ \ / / | | |  | |/ _` |/ _` | '__|  | |/ _` |
- | |___ \ V /| | | |__| | (_| | (_| | |     | | (_| |
- |_____| \_/ |_|_|\____/ \__,_|\__, |_|     |_|\__,_|
-                                |___/
-         Kerberos Toolkit  —  Rust Edition
-```
+<img width="1672" height="941" alt="Retrato do hacker sombrio EVIL HAGRID" src="https://github.com/user-attachments/assets/7cfa9ded-8b77-4fad-8e53-ae4c5e684e4b" />
 
 A Kerberos interaction and manipulation toolkit written in Rust. EvilHagrid provides
 offensive-security capabilities over the Kerberos V5 protocol (RFC 4120) — from raw
