@@ -39,8 +39,8 @@ fn enumerate_windows(luid_filter: Option<u64>) -> Result<()> {
         let mut count: u32 = 0;
         let mut list: *mut LUID = std::ptr::null_mut();
         let status = LsaEnumerateLogonSessions(&mut count, &mut list);
-        if status != 0 {
-            anyhow::bail!("LsaEnumerateLogonSessions: 0x{:08x}", status);
+        if status.0 != 0 {
+            anyhow::bail!("LsaEnumerateLogonSessions: NTSTATUS 0x{:08x}", status.0);
         }
 
         print_success(&format!("Found {} logon session(s)", count));

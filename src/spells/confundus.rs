@@ -28,14 +28,17 @@ fn tgtdeleg_windows(args: &HashMap<String, String>) -> Result<()> {
     use windows::Win32::Security::Authentication::Identity::{
         AcquireCredentialsHandleW, InitializeSecurityContextW, FreeCredentialsHandle,
         DeleteSecurityContext, FreeContextBuffer,
-        CredHandle, CtxtHandle, SecBuffer, SecBufferDesc, SecPkgContext_SessionKey,
+        SecBuffer, SecBufferDesc,
         SECPKG_CRED_OUTBOUND,
-        ISC_REQ_DELEGATE, ISC_REQ_MUTUAL_AUTH, ISC_REQ_ALLOCATE_MEMORY,
-        ISC_REQ_USE_DCE_STYLE,
-        SEC_I_CONTINUE_NEEDED, SEC_E_OK,
-        QueryContextAttributesW, SECPKG_ATTR_SESSION_KEY,
+        ISC_REQ_ALLOCATE_MEMORY, ISC_REQ_DELEGATE, ISC_REQ_MUTUAL_AUTH,
     };
-    use windows::core::PCWSTR;
+    use windows::Win32::Security::Credentials::SecHandle;
+    use windows::core::{PCWSTR, HRESULT};
+
+    type CredHandle = SecHandle;
+    type CtxtHandle = SecHandle;
+    const SEC_I_CONTINUE_NEEDED: HRESULT = HRESULT(0x00090312u32 as i32);
+    const SEC_E_OK: HRESULT = HRESULT(0);
 
     const SECBUFFER_TOKEN: u32 = 2;
     const SECBUFFER_VERSION: u32 = 0;
@@ -81,18 +84,18 @@ fn tgtdeleg_windows(args: &HashMap<String, String>) -> Result<()> {
 
     let status = unsafe {
         InitializeSecurityContextW(
-            Some(&cred_handle),
+            Some(std::ptr::addr_of!(cred_handle)),
             None,
-            PCWSTR(w_target.as_ptr()),
+            Some(w_target.as_ptr()),
             isc_req,
             0,
             16, // SECURITY_NATIVE_DREP
             None,
             0,
-            &mut ctx_handle,
-            Some(&mut out_desc),
-            &mut ctx_attrs,
-            Some(&mut expiry),
+            Some(std::ptr::addr_of_mut!(ctx_handle)),
+            Some(std::ptr::addr_of_mut!(out_desc)),
+            std::ptr::addr_of_mut!(ctx_attrs),
+            None,
         )
     };
 

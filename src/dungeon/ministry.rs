@@ -5,15 +5,15 @@ use anyhow::{bail, Result};
 
 #[cfg(windows)]
 use windows::{
-    core::PCSTR,
+    core::PSTR,
     Win32::{
-        Foundation::{HANDLE, LUID, STATUS_SUCCESS},
+        Foundation::{HANDLE, LUID},
         Security::Authentication::Identity::{
             LsaConnectUntrusted, LsaCallAuthenticationPackage,
             LsaLookupAuthenticationPackage, LsaFreeReturnBuffer,
-            KERB_PURGE_TKT_CACHE_REQUEST, KERB_RETRIEVE_TKT_REQUEST,
+            KERB_PURGE_TKT_CACHE_REQUEST,
             KERB_SUBMIT_TKT_REQUEST,
-            KerbPurgeTicketCacheExMessage, KerbRetrieveTicketMessage,
+            KerbPurgeTicketCacheExMessage,
             KerbSubmitTicketMessage,
         },
     },
@@ -25,8 +25,8 @@ pub fn lsa_handle() -> Result<isize> {
     unsafe {
         let mut handle: HANDLE = zeroed();
         let status = LsaConnectUntrusted(&mut handle);
-        if status != STATUS_SUCCESS.0 as i32 {
-            bail!("LsaConnectUntrusted failed: 0x{:08x}", status);
+        if status.0 != 0 {
+            bail!("LsaConnectUntrusted failed: NTSTATUS 0x{:08x}", status.0);
         }
         Ok(handle.0 as isize)
     }
@@ -39,17 +39,17 @@ pub fn lsa_package_id(handle: isize) -> Result<u32> {
     unsafe {
         let mut pkg_id: u32 = 0;
         let name = windows::Win32::Security::Authentication::Identity::LSA_STRING {
-            Length: 12,
-            MaximumLength: 13,
-            Buffer: PCSTR("Kerberos\0".as_ptr()),
+            Length: 8,
+            MaximumLength: 9,
+            Buffer: PSTR(b"Kerberos\0".as_ptr() as *mut u8),
         };
         let status = LsaLookupAuthenticationPackage(
             HANDLE(handle as _),
             &name,
             &mut pkg_id,
         );
-        if status != STATUS_SUCCESS.0 as i32 {
-            bail!("LsaLookupAuthenticationPackage failed: 0x{:08x}", status);
+        if status.0 != 0 {
+            bail!("LsaLookupAuthenticationPackage failed: NTSTATUS 0x{:08x}", status.0);
         }
         Ok(pkg_id)
     }
@@ -91,8 +91,8 @@ pub fn import_ticket(kirbi: &[u8]) -> Result<()> {
         );
         std::alloc::dealloc(ptr, layout);
         if !ret_buf.is_null() { let _ = LsaFreeReturnBuffer(ret_buf); }
-        if result.is_err() || status != 0 {
-            bail!("LsaCallAuthenticationPackage failed: result={:?} status=0x{:08x}", result, status);
+        if result.0 != 0 || status != 0 {
+            bail!("LsaCallAuthenticationPackage failed: NTSTATUS=0x{:08x} sub=0x{:08x}", result.0, status);
         }
     }
     Ok(())
@@ -104,8 +104,7 @@ pub fn dump_tickets(luid: Option<u64>) -> Result<Vec<Vec<u8>>> {
     use windows::Win32::Foundation::{HANDLE, LUID};
     use windows::Win32::Security::Authentication::Identity::{
         LsaCallAuthenticationPackage, LsaFreeReturnBuffer,
-        LsaEnumerateLogonSessions, KERB_RETRIEVE_TKT_REQUEST,
-        KerbRetrieveTicketMessage,
+        LsaEnumerateLogonSessions,
     };
 
     let handle_raw = lsa_handle()?;
@@ -116,8 +115,8 @@ pub fn dump_tickets(luid: Option<u64>) -> Result<Vec<Vec<u8>>> {
     let mut session_list: *mut LUID = std::ptr::null_mut();
     unsafe {
         let status = LsaEnumerateLogonSessions(&mut session_count, &mut session_list);
-        if status != 0 {
-            bail!("LsaEnumerateLogonSessions: 0x{:08x}", status);
+        if status.0 != 0 {
+            bail!("LsaEnumerateLogonSessions: NTSTATUS 0x{:08x}", status.0);
         }
     }
 
@@ -199,7 +198,7 @@ pub fn dump_tickets(luid: Option<u64>) -> Result<Vec<Vec<u8>>> {
                 size_of::<RetrieveReq>() as u32,
                 Some(&mut resp_buf), Some(&mut resp_len), Some(&mut sub_status),
             );
-            if result.is_ok() && !resp_buf.is_null() && sub_status == 0 {
+            if result.0 == 0 && !resp_buf.is_null() && sub_status == 0 {
                 // Response buffer is KERB_RETRIEVE_TKT_RESPONSE (= KERB_EXTERNAL_TICKET).
                 // EncodedTicket is a pointer into the same allocation; dereference it.
                 let ext = &*(resp_buf as *const KerbExternalTicketLayout);
@@ -239,7 +238,7 @@ pub fn purge_tickets(luid: Option<u64>) -> Result<()> {
         let mut ret_buf = std::ptr::null_mut();
         let mut ret_len: u32 = 0;
         let mut status: i32 = 0;
-        LsaCallAuthenticationPackage(
+        let r = LsaCallAuthenticationPackage(
             handle,
             pkg_id,
             &req as *const _ as _,
@@ -247,8 +246,9 @@ pub fn purge_tickets(luid: Option<u64>) -> Result<()> {
             Some(&mut ret_buf),
             Some(&mut ret_len),
             Some(&mut status),
-        ).map_err(|e| anyhow::anyhow!("LSA purge failed: {}", e))?;
+        );
         if !ret_buf.is_null() { let _ = LsaFreeReturnBuffer(ret_buf); }
+        if r.0 != 0 { bail!("LSA purge failed: NTSTATUS 0x{:08x}", r.0); }
     }
     Ok(())
 }
@@ -300,8 +300,8 @@ pub fn enumerate_sessions_and_tickets(service_filter: Option<&str>) -> Result<Ve
     let mut session_list: *mut LUID = std::ptr::null_mut();
     unsafe {
         let status = LsaEnumerateLogonSessions(&mut session_count, &mut session_list);
-        if status != 0 {
-            bail!("LsaEnumerateLogonSessions failed: NTSTATUS 0x{:08x}", status);
+        if status.0 != 0 {
+            bail!("LsaEnumerateLogonSessions failed: NTSTATUS 0x{:08x}", status.0);
         }
     }
 
@@ -347,7 +347,7 @@ pub fn enumerate_sessions_and_tickets(service_filter: Option<&str>) -> Result<Ve
                 size_of::<QueryReq>() as u32,
                 Some(&mut resp_buf), Some(&mut resp_len), Some(&mut sub_status),
             );
-            if result.is_err() || resp_buf.is_null() {
+            if result.0 != 0 || resp_buf.is_null() {
                 if !resp_buf.is_null() { let _ = LsaFreeReturnBuffer(resp_buf); }
                 continue;
             }
