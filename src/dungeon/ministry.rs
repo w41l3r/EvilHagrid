@@ -9,8 +9,9 @@ use windows::{
     Win32::{
         Foundation::{HANDLE, LUID},
         Security::Authentication::Identity::{
-            LsaConnectUntrusted, LsaCallAuthenticationPackage,
+            LsaConnectUntrusted, LsaRegisterLogonProcess, LsaCallAuthenticationPackage,
             LsaLookupAuthenticationPackage, LsaFreeReturnBuffer,
+            LSA_STRING,
             KERB_PURGE_TKT_CACHE_REQUEST,
             KERB_SUBMIT_TKT_REQUEST,
             KerbPurgeTicketCacheExMessage,
@@ -19,16 +20,37 @@ use windows::{
     },
 };
 
+/// Returns (lsa_handle, is_privileged).
+/// Tries LsaRegisterLogonProcess first (requires SeTcbPrivilege / SYSTEM);
+/// falls back to LsaConnectUntrusted for unprivileged sessions.
 #[cfg(windows)]
 pub fn lsa_handle() -> Result<isize> {
+    lsa_handle_with_priv().map(|(h, _)| h)
+}
+
+#[cfg(windows)]
+pub fn lsa_handle_with_priv() -> Result<(isize, bool)> {
     use std::mem::zeroed;
     unsafe {
+        // Try privileged path first — needed to query other users' sessions
+        let name_bytes = b"hagrid\0";
+        let reg_name = LSA_STRING {
+            Length: 6,
+            MaximumLength: 7,
+            Buffer: PSTR(name_bytes.as_ptr() as *mut u8),
+        };
         let mut handle: HANDLE = zeroed();
+        let mut sec_mode: u32 = 0;
+        let status = LsaRegisterLogonProcess(&reg_name, &mut handle, &mut sec_mode);
+        if status.0 == 0 {
+            return Ok((handle.0 as isize, true));
+        }
+        // Fall back to unprivileged — can only see current session
         let status = LsaConnectUntrusted(&mut handle);
         if status.0 != 0 {
             bail!("LsaConnectUntrusted failed: NTSTATUS 0x{:08x}", status.0);
         }
-        Ok(handle.0 as isize)
+        Ok((handle.0 as isize, false))
     }
 }
 
@@ -291,9 +313,13 @@ pub fn enumerate_sessions_and_tickets(service_filter: Option<&str>) -> Result<Ve
         LsaEnumerateLogonSessions,
     };
 
-    let handle_raw = lsa_handle()?;
+    let (handle_raw, is_privileged) = lsa_handle_with_priv()?;
     let pkg_id = lsa_package_id(handle_raw)?;
     let handle = HANDLE(handle_raw as _);
+
+    if !is_privileged {
+        eprintln!("  [!] Running without SeTcbPrivilege — only current session visible");
+    }
 
     // LsaEnumerateLogonSessions
     let mut session_count: u32 = 0;
@@ -329,10 +355,25 @@ pub fn enumerate_sessions_and_tickets(service_filter: Option<&str>) -> Result<Ve
 
     let mut rows = Vec::new();
 
+    // Build list of LUIDs to query.
+    // Without privilege, only LUID={0,0} (current session) works.
+    let luids_to_query: Vec<(u64, LUID)> = if is_privileged {
+        unsafe {
+            (0..session_count as usize)
+                .map(|i| {
+                    let l = *session_list.add(i);
+                    let v = (l.HighPart as u64) << 32 | l.LowPart as u64;
+                    (v, l)
+                })
+                .collect()
+        }
+    } else {
+        // Current session sentinel: LUID={0,0} means "caller's session"
+        vec![(0u64, LUID { LowPart: 0, HighPart: 0 })]
+    };
+
     unsafe {
-        for i in 0..session_count as usize {
-            let luid = *session_list.add(i);
-            let luid_val = (luid.HighPart as u64) << 32 | luid.LowPart as u64;
+        for (luid_val, luid) in &luids_to_query {
             let req = QueryReq {
                 msg_type: 14, // KerbQueryTicketCacheExMessage
                 luid_low: luid.LowPart,
@@ -347,10 +388,11 @@ pub fn enumerate_sessions_and_tickets(service_filter: Option<&str>) -> Result<Ve
                 size_of::<QueryReq>() as u32,
                 Some(&mut resp_buf), Some(&mut resp_len), Some(&mut sub_status),
             );
-            if result.0 != 0 || resp_buf.is_null() {
+            if result.0 != 0 || sub_status != 0 || resp_buf.is_null() {
                 if !resp_buf.is_null() { let _ = LsaFreeReturnBuffer(resp_buf); }
                 continue;
             }
+            let luid_val = *luid_val;
             // Response: msg_type(4) + count(4) + TicketInfoEx[]
             let resp_ptr = resp_buf as *const u8;
             if resp_len < 8 {
@@ -392,7 +434,9 @@ pub fn enumerate_sessions_and_tickets(service_filter: Option<&str>) -> Result<Ve
             }
             let _ = LsaFreeReturnBuffer(resp_buf);
         }
-        let _ = LsaFreeReturnBuffer(session_list as *mut _);
+        if is_privileged && !session_list.is_null() {
+            let _ = LsaFreeReturnBuffer(session_list as *mut _);
+        }
     }
     Ok(rows)
 }
