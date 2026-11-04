@@ -356,6 +356,43 @@ workflows; a troca da branch padrão ficará nos audit logs do GitHub e altera a
 page/clones futuros. A remoção de `origin/master` não está incluída; fazê-la seria uma
 ação destrutiva separada, recuperável por `unstable`, mas requer autorização específica.
 
+## 11. Commit raiz e verificação das referências locais
+
+**Status:** `EXECUTADO`
+
+**Objetivo:** materializar a nova árvore em uma referência Git reproduzível e confirmar
+que o inventário restrito permaneceu fora do commit.
+
+**Comandos:**
+
+```bash
+git commit -m "feat: restart EvilHagrid as narrow C# metadata auditor"
+git status --short --branch --untracked-files=all
+git rev-parse main unstable master
+git ls-tree -r --name-only main
+git grep -n -E 'ghp_|github_pat_|AKIA|BEGIN (RSA|OPENSSH|EC) PRIVATE KEY' \
+  main -- . ':!docs/validation-runbook.md'
+```
+
+**Saída capturada:**
+
+```text
+[main (root-commit) 821b76a] feat: restart EvilHagrid as narrow C# metadata auditor
+16 files changed, 1107 insertions(+)
+
+## main
+
+821b76acc27458650cd18aa17ad00372a183a596
+0092a2ff07ac5768f964e584216e8dabd6d33cf4
+0092a2ff07ac5768f964e584216e8dabd6d33cf4
+
+git grep: exit 1, sem correspondências
+```
+
+**Interpretação:** `CONFIRMADO` que `main` possui história raiz independente, que
+`unstable` e `master` preservam o commit Rust e que nenhum padrão de segredo conhecido
+foi encontrado na árvore commitada. `.restricted/credentials.md` não aparece no tree.
+
 ## Conclusões materiais
 
 1. `CONFIRMADO`: o projeto Rust está preservado localmente em `unstable` no commit
