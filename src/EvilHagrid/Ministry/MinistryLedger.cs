@@ -46,10 +46,19 @@ internal sealed class MinistryLedger
                         LsaFreeReturnBuffer(luidArray);
                     }
                 }
+
+                Console.Error.WriteLine(
+                    $"[!] LsaEnumerateLogonSessions failed (0x{enumStatus:X8}); falling back to current session.");
             }
 
             // Untrusted or enumeration failed: current session only.
             var currentLuid = GetCurrentLuid();
+            if (currentLuid.LowPart == 0 && currentLuid.HighPart == 0)
+            {
+                Console.Error.WriteLine(
+                    "[!] Could not determine the current logon session LUID; triage will show 0x0.");
+            }
+
             return QueryTicketsForSession(lsaHandle, packageId, default, serviceFilter)
                 .Select(s => s with { LuidLow = currentLuid.LowPart, LuidHigh = currentLuid.HighPart })
                 .ToList();
@@ -78,8 +87,14 @@ internal sealed class MinistryLedger
         {
             var packageId = LookupKerbPackage(lsaHandle, out packageBuffer);
 
-            // If untrusted we can only retrieve from the current session.
+            // Untrusted handle can only query the current session.
             var queryLuid = trusted ? requestedLuid : default;
+            if (!trusted && (requestedLuid.LowPart != 0 || requestedLuid.HighPart != 0))
+            {
+                Console.Error.WriteLine(
+                    "[!] Insufficient privilege to retrieve tickets for another session; " +
+                    "dumping the current session instead.");
+            }
 
             var scrolls = QueryTicketsForSession(lsaHandle, packageId, queryLuid, serviceFilter);
 
@@ -103,9 +118,10 @@ internal sealed class MinistryLedger
                         scroll.TicketFlags,
                         Convert.ToBase64String(kirbiBytes)));
                 }
-                catch
+                catch (Exception ex) when (ex is Win32Exception or InvalidDataException
+                                               or OverflowException or ArgumentException)
                 {
-                    // Skip tickets that cannot be retrieved (e.g. expired, no access).
+                    // Skip tickets that cannot be retrieved (e.g. expired, access denied).
                 }
             }
 
@@ -274,9 +290,10 @@ internal sealed class MinistryLedger
                 Marshal.WriteByte(requestBuffer, i, 0);
 
             // Copy target name immediately after the struct.
-            var namePtr = IntPtr.Add(requestBuffer, structSize);
-            Marshal.Copy(targetBytes, 0, namePtr, targetBytes.Length);
+            Marshal.Copy(targetBytes, 0, IntPtr.Add(requestBuffer, structSize), targetBytes.Length);
 
+            // Buffer must be a relative offset from the start of the submit buffer —
+            // LSASS receives the bytes over ALPC and resolves the offset in its own VA space.
             var request = new KerbRetrieveTktRequest
             {
                 MessageType    = KerbRetrieveEncodedTicketMessage,
@@ -288,7 +305,7 @@ internal sealed class MinistryLedger
                 {
                     Length        = (ushort)targetBytes.Length,
                     MaximumLength = (ushort)(targetBytes.Length + 2),
-                    Buffer        = namePtr
+                    Buffer        = (IntPtr)structSize
                 }
             };
 
@@ -307,8 +324,14 @@ internal sealed class MinistryLedger
             if (ticket.EncodedTicketSize == 0 || ticket.EncodedTicket == IntPtr.Zero)
                 throw new InvalidDataException("Kerberos returned an empty encoded ticket.");
 
-            var kirbiBytes = new byte[ticket.EncodedTicketSize];
-            Marshal.Copy(ticket.EncodedTicket, kirbiBytes, 0, (int)ticket.EncodedTicketSize);
+            const uint MaxKirbiSize = 10 * 1024 * 1024; // 10 MB sanity cap
+            if (ticket.EncodedTicketSize > MaxKirbiSize)
+                throw new InvalidDataException(
+                    $"Kerberos returned an unreasonable ticket size ({ticket.EncodedTicketSize} bytes).");
+
+            var ticketSize = checked((int)ticket.EncodedTicketSize);
+            var kirbiBytes = new byte[ticketSize];
+            Marshal.Copy(ticket.EncodedTicket, kirbiBytes, 0, ticketSize);
             return kirbiBytes;
         }
         finally
