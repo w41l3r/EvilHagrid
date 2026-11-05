@@ -335,28 +335,7 @@ como sensível. Não há tráfego de rede intencional.
 
 **Conclusão:** compatibilidade runtime Windows `NÃO VERIFICADA`.
 
-## 10. Publicação no GitHub
-
-**Status:** `AVALIADO — NÃO EXECUTADO`
-
-**Objetivo proposto:** publicar `unstable` e `main` e tornar `main` a branch padrão.
-
-**Comandos candidatos:**
-
-```bash
-git push origin unstable:unstable
-git push --set-upstream origin main:main
-gh repo edit w41l3r/EvilHagrid --default-branch main
-```
-
-**Output capturado:** nenhum; não houve conexão nem alteração remota.
-
-**Telemetria e risco operacional:** os pushes criarão refs e podem disparar webhooks ou
-workflows; a troca da branch padrão ficará nos audit logs do GitHub e altera a landing
-page/clones futuros. A remoção de `origin/master` não está incluída; fazê-la seria uma
-ação destrutiva separada, recuperável por `unstable`, mas requer autorização específica.
-
-## 11. Commit raiz e verificação das referências locais
+## 10. Commit raiz e verificação das referências locais
 
 **Status:** `EXECUTADO`
 
@@ -393,6 +372,47 @@ git grep: exit 1, sem correspondências
 `unstable` e `master` preservam o commit Rust e que nenhum padrão de segredo conhecido
 foi encontrado na árvore commitada. `.restricted/credentials.md` não aparece no tree.
 
+## 11. Publicação no GitHub
+
+**Status:** `EXECUTADO`
+
+**Objetivo:** publicar `unstable` e `main` sem force ou alteração de `origin/master`,
+e tornar `main` a branch padrão.
+
+**Timestamp de verificação:** `2026-11-04T21:07:11-03:00`
+
+**Comandos:**
+
+```bash
+git push --atomic --set-upstream origin unstable:unstable main:main
+gh repo edit w41l3r/EvilHagrid --default-branch main
+gh repo view w41l3r/EvilHagrid --json nameWithOwner,url,defaultBranchRef
+```
+
+**Saída capturada:**
+
+```text
+To https://github.com/w41l3r/EvilHagrid.git
+ * [new branch]      unstable -> unstable
+ * [new branch]      main -> main
+branch 'unstable' set up to track 'origin/unstable'.
+branch 'main' set up to track 'origin/main'.
+exit code: 0
+
+gh repo edit: sem stdout/stderr; exit code 0
+
+{"defaultBranchRef":{"name":"main"},"nameWithOwner":"w41l3r/EvilHagrid","url":"https://github.com/w41l3r/EvilHagrid"}
+exit code: 0
+```
+
+**Interpretação:** `CONFIRMADO` que as duas branches remotas foram criadas e que
+`main` é a branch padrão do repositório GitHub.
+
+**Telemetria e risco operacional:** os pushes e a troca de branch padrão ficam nos
+logs do GitHub e podem disparar webhooks ou workflows. `origin/master` não foi removida;
+essa exclusão seria uma ação destrutiva separada, recuperável por `unstable`, mas exige
+autorização específica.
+
 ## Conclusões materiais
 
 1. `CONFIRMADO`: o projeto Rust está preservado localmente em `unstable` no commit
@@ -402,5 +422,4 @@ foi encontrado na árvore commitada. `.restricted/credentials.md` não aparece n
 3. `CONFIRMADO`: o token `CRED-GITHUB-001` foi removido da URL local e isolado em
    inventário `0600`; revogação remota ainda é necessária.
 4. `NÃO VERIFICADO`: execução real do caminho LSA em Windows.
-5. `NÃO VERIFICADO`: estado remoto das novas branches e branch padrão, pois publicação
-   ainda não foi executada.
+5. `CONFIRMADO`: `origin/unstable` e `origin/main` existem e `main` é a branch padrão.
