@@ -1,49 +1,100 @@
 # EvilHagrid
 
-EvilHagrid is a deliberately narrow C# utility for auditing Kerberos cache metadata
-in the current Windows logon session. Its small spell book keeps the playful naming
-from the original Rust experiment while reducing the project to two read-only flows.
+EvilHagrid é uma reimplementação enxuta em C# de duas funcionalidades do [Rubeus](https://github.com/GhostPack/Rubeus), com nomenclatura temática do universo Harry Potter. Roda em Windows e extrai tickets Kerberos do cache da LSA via `LsaCallAuthenticationPackage`.
 
 ## Spells
 
-```text
-EvilHagrid census [--service <text>]
-EvilHagrid pensieve --out <path.json> [--service <text>]
+```
+EvilHagrid accio [--service <text>]
+EvilHagrid aparecium --luid <0x...> [--service <text>]
 ```
 
-- `census` shows the client, service, validity times, encryption type, and ticket flags.
-- `pensieve` writes the same metadata to a new JSON file and refuses to overwrite an
-  existing file.
+### `accio` — enumerar tickets (triage)
 
-## Deliberate boundaries
+Lista os tickets Kerberos das sessões de logon disponíveis, incluindo o LUID de cada sessão. Quando rodando com `SeTcbPrivilege` (SYSTEM), enumera todas as sessões via `LsaEnumerateLogonSessions`. Sem esse privilégio, exibe apenas a sessão atual.
 
-- Windows only.
-- Current logon session only, through an untrusted LSA connection.
-- No raw ticket, `.kirbi`, session-key, or credential export.
-- No cross-session enumeration, elevation, injection, network traffic, or persistence.
-- No obfuscation or removal of license/provenance material.
+```
+PS> .\EvilHagrid.exe accio
 
-The command shape is conceptually inspired by the defensive inspection use case of
-GhostPack Rubeus `triage`. This branch is an independent implementation and contains
-no copied Rubeus source. The raw-ticket behavior of Rubeus `dump` is intentionally not
-implemented; `pensieve` is a metadata-only export.
+LUID     | Client                     | Service                      | Expires (UTC)        | Encryption              | Flags
+---------+----------------------------+------------------------------+----------------------+-------------------------+-----------
+0x17b7e0 | andre@CORP.LOCAL           | krbtgt/CORP.LOCAL@CORP.LOCAL | 2026-11-05 22:33:23Z | AES256-CTS-HMAC-SHA1-96 | 0x40E10000
+
+1 ticket(s) enumerated.
+```
+
+**Opções:**
+- `--service <text>` — filtra tickets cujo service name ou realm contenha o texto (case-insensitive)
+
+### `aparecium` — dump de ticket (base64 kirbi)
+
+Para um LUID obtido via `accio`, recupera o ticket encodado (`KerbRetrieveEncodedTicketMessage`) e imprime o base64 do `KRB_CRED` — idêntico ao output do `Rubeus dump`.
+
+```
+PS> .\EvilHagrid.exe aparecium --luid 0x17b7e0 --service krbtgt
+
+  [*] LUID          : 0x17b7e0
+      UserName      : andre@CORP.LOCAL
+      ServiceName   : krbtgt/CORP.LOCAL@CORP.LOCAL
+      StartTime     : 2026-11-05 12:33:23Z
+      EndTime       : 2026-11-05 22:33:23Z
+      Flags         : 0x40E10000
+
+    Base64EncodedTicket :
+
+      doIFCDCCBQSgAwIBBaEMGwpDT1JQLkxPQ0FMoh8w...
+
+[*] Dumped 1 ticket(s).
+```
+
+**Opções:**
+- `--luid <0x...>` — LUID hexadecimal da sessão alvo (obrigatório)
+- `--service <text>` — filtra quais tickets da sessão serão dumpados
+
+## Requisitos de privilégio
+
+| Operação | Privilégio necessário |
+|---|---|
+| `accio` — sessão atual | Nenhum |
+| `accio` — todas as sessões | `SeTcbPrivilege` (SYSTEM) |
+| `aparecium` — sessão atual | Nenhum |
+| `aparecium` — outra sessão | `SeTcbPrivilege` (SYSTEM) |
+
+Quando rodando como admin sem `SeTcbPrivilege`, ambos os comandos operam normalmente na sessão atual. O dump de outra sessão requer impersonation de SYSTEM.
 
 ## Build
 
-The current validation environment provides .NET SDK 6.0.400:
-
 ```bash
 dotnet build src/EvilHagrid/EvilHagrid.csproj --configuration Release
-dotnet run --project src/EvilHagrid/EvilHagrid.csproj -- help
+# binário em: src/EvilHagrid/bin/Release/net6.0/EvilHagrid.exe
 ```
 
-.NET 6 is end-of-life. Move the target framework to a supported LTS before production
-deployment once the corresponding SDK is available in the build environment.
+Requer .NET SDK 6.0+. O binário é self-contained por padrão no diretório de output.
+
+## Arquitetura
+
+```
+src/EvilHagrid/
+├── Cli/
+│   ├── Incantation.cs     # Parser de argumentos + enum SpellName
+│   └── SpellBook.cs       # Dispatcher principal
+├── Domain/
+│   ├── ScrollRecord.cs    # Metadata de ticket (triage)
+│   └── KirbiRecord.cs     # Ticket encodado + base64 (dump)
+├── Ministry/
+│   └── MinistryLedger.cs  # Toda interação com LSA via P/Invoke
+├── Rendering/
+│   └── GreatHallTable.cs  # Renderização de tabela ASCII
+└── Spells/
+    ├── TriageCharm.cs     # Lógica de output do accio
+    └── DumpCharm.cs       # Lógica de output do aparecium
+```
 
 ## Branches
 
-- `main`: this C# metadata-audit rewrite.
-- `unstable`: archived Rust implementation at its last pre-rewrite commit.
+- `main` — implementação C# atual
+- `unstable` — implementação Rust anterior (arquivada)
 
-Use only on systems where you have explicit authorization to inspect the current
-user's authentication metadata.
+---
+
+> Use apenas em sistemas onde você possui autorização explícita para inspecionar tickets Kerberos.
