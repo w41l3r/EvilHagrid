@@ -1,4 +1,5 @@
-# EvilHagrid
+<img width="1672" height="941" alt="Hacker sombrio EVIL HAGRID" src="https://github.com/user-attachments/assets/edca5a68-5d84-4228-ab2c-9fd41d0e3444" />
+
 
 EvilHagrid é uma reimplementação enxuta em C# de duas funcionalidades do [Rubeus](https://github.com/GhostPack/Rubeus), com nomenclatura temática do universo Harry Potter. Roda em Windows e extrai tickets Kerberos do cache da LSA via `LsaCallAuthenticationPackage`.
 
