@@ -3,14 +3,14 @@ namespace EvilHagrid.Cli;
 internal enum SpellName
 {
     Help,
-    Census,
-    Pensieve
+    Triage,
+    Dump
 }
 
 internal sealed record Incantation(
     SpellName Spell,
     string? ServiceFilter = null,
-    string? OutputPath = null);
+    string? LuidHex = null);
 
 internal sealed class IncantationException : Exception
 {
@@ -30,13 +30,13 @@ internal static class IncantationParser
 
         var spell = arguments[0].ToLowerInvariant() switch
         {
-            "census" => SpellName.Census,
-            "pensieve" => SpellName.Pensieve,
-            _ => throw new IncantationException($"Unknown spell '{arguments[0]}'.")
+            "triage" => SpellName.Triage,
+            "dump"   => SpellName.Dump,
+            _        => throw new IncantationException($"Unknown spell '{arguments[0]}'.")
         };
 
         string? serviceFilter = null;
-        string? outputPath = null;
+        string? luidHex = null;
 
         for (var index = 1; index < arguments.Count; index++)
         {
@@ -45,8 +45,8 @@ internal static class IncantationParser
                 case "--service":
                     serviceFilter = ReadSingleValue(arguments, ref index, serviceFilter, "--service");
                     break;
-                case "--out":
-                    outputPath = ReadSingleValue(arguments, ref index, outputPath, "--out");
+                case "--luid":
+                    luidHex = ReadSingleValue(arguments, ref index, luidHex, "--luid");
                     break;
                 case "--help":
                 case "-h":
@@ -56,17 +56,17 @@ internal static class IncantationParser
             }
         }
 
-        if (spell == SpellName.Census && outputPath is not null)
+        if (spell == SpellName.Dump && luidHex is null)
         {
-            throw new IncantationException("The census spell does not accept --out.");
+            throw new IncantationException("The dump spell requires --luid <0x...>.");
         }
 
-        if (spell == SpellName.Pensieve && outputPath is null)
+        if (spell == SpellName.Triage && luidHex is not null)
         {
-            throw new IncantationException("The pensieve spell requires --out <path>.");
+            throw new IncantationException("The triage spell does not accept --luid.");
         }
 
-        return new Incantation(spell, serviceFilter, outputPath);
+        return new Incantation(spell, serviceFilter, luidHex);
     }
 
     private static string ReadSingleValue(

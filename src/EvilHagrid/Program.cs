@@ -1,3 +1,3 @@
 using EvilHagrid.Cli;
 
-return await SpellBook.CastAsync(args);
+return SpellBook.Cast(args);

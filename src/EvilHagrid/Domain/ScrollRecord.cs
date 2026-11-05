@@ -1,6 +1,8 @@
 namespace EvilHagrid.Domain;
 
 internal sealed record ScrollRecord(
+    uint LuidLow,
+    int LuidHigh,
     string ClientName,
     string ClientRealm,
     string ServiceName,

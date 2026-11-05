@@ -5,7 +5,7 @@ namespace EvilHagrid.Cli;
 
 internal static class SpellBook
 {
-    public static async Task<int> CastAsync(string[] arguments)
+    public static int Cast(string[] arguments)
     {
         try
         {
@@ -17,14 +17,21 @@ internal static class SpellBook
             }
 
             var ledger = new MinistryLedger();
-            var scrolls = ledger.ReadCurrentSession(incantation.ServiceFilter);
 
-            return incantation.Spell switch
+            if (incantation.Spell == SpellName.Triage)
             {
-                SpellName.Census => CensusCharm.Cast(scrolls),
-                SpellName.Pensieve => await PensieveCharm.CastAsync(scrolls, incantation.OutputPath!),
-                _ => 1
-            };
+                var scrolls = ledger.ReadAllSessions(incantation.ServiceFilter);
+                return TriageCharm.Cast(scrolls);
+            }
+
+            if (incantation.Spell == SpellName.Dump)
+            {
+                ParseLuid(incantation.LuidHex!, out var luidLow, out var luidHigh);
+                var kirbis = ledger.RetrieveEncodedTickets(luidLow, luidHigh, incantation.ServiceFilter);
+                return DumpCharm.Cast(kirbis);
+            }
+
+            return 1;
         }
         catch (IncantationException exception)
         {
@@ -54,16 +61,36 @@ internal static class SpellBook
         }
     }
 
+    private static void ParseLuid(string luidHex, out uint luidLow, out int luidHigh)
+    {
+        var hex = luidHex.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? luidHex[2..]
+            : luidHex;
+
+        if (!ulong.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var value))
+        {
+            throw new IncantationException(
+                $"Invalid LUID '{luidHex}'. Expected hexadecimal (e.g. 0x3e7).");
+        }
+
+        luidLow  = (uint)(value & 0xFFFFFFFF);
+        luidHigh = (int)(value >> 32);
+    }
+
     private static void PrintHelp()
     {
-        Console.WriteLine("EvilHagrid — a narrow Kerberos cache metadata auditor");
+        Console.WriteLine("EvilHagrid — Kerberos ticket utility");
         Console.WriteLine();
         Console.WriteLine("Usage:");
-        Console.WriteLine("  EvilHagrid census [--service <text>]");
-        Console.WriteLine("  EvilHagrid pensieve --out <path.json> [--service <text>]");
+        Console.WriteLine("  EvilHagrid triage [--service <text>]");
+        Console.WriteLine("  EvilHagrid dump --luid <0x...> [--service <text>]");
         Console.WriteLine();
         Console.WriteLine("Spells:");
-        Console.WriteLine("  census    Show ticket metadata from the current Windows logon session.");
-        Console.WriteLine("  pensieve  Save the same metadata as JSON without ticket bytes or keys.");
+        Console.WriteLine("  triage    Enumerate Kerberos tickets across logon sessions (shows LUIDs).");
+        Console.WriteLine("  dump      Dump the encoded ticket (base64 kirbi) for a specific LUID.");
+        Console.WriteLine();
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --luid <0x...>    Hexadecimal LUID from triage output (dump only).");
+        Console.WriteLine("  --service <text>  Filter tickets whose service name or realm matches text.");
     }
 }
