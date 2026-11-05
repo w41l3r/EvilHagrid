@@ -3,8 +3,8 @@ namespace EvilHagrid.Cli;
 internal enum SpellName
 {
     Help,
-    Triage,
-    Dump
+    Accio,
+    Aparecium
 }
 
 internal sealed record Incantation(
@@ -30,9 +30,9 @@ internal static class IncantationParser
 
         var spell = arguments[0].ToLowerInvariant() switch
         {
-            "triage" => SpellName.Triage,
-            "dump"   => SpellName.Dump,
-            _        => throw new IncantationException($"Unknown spell '{arguments[0]}'.")
+            "accio"     => SpellName.Accio,
+            "aparecium" => SpellName.Aparecium,
+            _           => throw new IncantationException($"Unknown spell '{arguments[0]}'.")
         };
 
         string? serviceFilter = null;
@@ -56,14 +56,14 @@ internal static class IncantationParser
             }
         }
 
-        if (spell == SpellName.Dump && luidHex is null)
+        if (spell == SpellName.Aparecium && luidHex is null)
         {
-            throw new IncantationException("The dump spell requires --luid <0x...>.");
+            throw new IncantationException("The aparecium spell requires --luid <0x...>.");
         }
 
-        if (spell == SpellName.Triage && luidHex is not null)
+        if (spell == SpellName.Accio && luidHex is not null)
         {
-            throw new IncantationException("The triage spell does not accept --luid.");
+            throw new IncantationException("The accio spell does not accept --luid.");
         }
 
         return new Incantation(spell, serviceFilter, luidHex);

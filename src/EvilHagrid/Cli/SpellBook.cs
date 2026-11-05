@@ -18,13 +18,13 @@ internal static class SpellBook
 
             var ledger = new MinistryLedger();
 
-            if (incantation.Spell == SpellName.Triage)
+            if (incantation.Spell == SpellName.Accio)
             {
                 var scrolls = ledger.ReadAllSessions(incantation.ServiceFilter);
                 return TriageCharm.Cast(scrolls);
             }
 
-            if (incantation.Spell == SpellName.Dump)
+            if (incantation.Spell == SpellName.Aparecium)
             {
                 ParseLuid(incantation.LuidHex!, out var luidLow, out var luidHigh);
                 var kirbis = ledger.RetrieveEncodedTickets(luidLow, luidHigh, incantation.ServiceFilter);
@@ -82,12 +82,12 @@ internal static class SpellBook
         Console.WriteLine("EvilHagrid — Kerberos ticket utility");
         Console.WriteLine();
         Console.WriteLine("Usage:");
-        Console.WriteLine("  EvilHagrid triage [--service <text>]");
-        Console.WriteLine("  EvilHagrid dump --luid <0x...> [--service <text>]");
+        Console.WriteLine("  EvilHagrid accio [--service <text>]");
+        Console.WriteLine("  EvilHagrid aparecium --luid <0x...> [--service <text>]");
         Console.WriteLine();
         Console.WriteLine("Spells:");
-        Console.WriteLine("  triage    Enumerate Kerberos tickets across logon sessions (shows LUIDs).");
-        Console.WriteLine("  dump      Dump the encoded ticket (base64 kirbi) for a specific LUID.");
+        Console.WriteLine("  accio       Enumerate Kerberos tickets across logon sessions (shows LUIDs).");
+        Console.WriteLine("  aparecium   Dump the encoded ticket (base64 kirbi) for a specific LUID.");
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  --luid <0x...>    Hexadecimal LUID from triage output (dump only).");
