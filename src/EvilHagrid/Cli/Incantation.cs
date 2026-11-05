@@ -10,7 +10,8 @@ internal enum SpellName
 internal sealed record Incantation(
     SpellName Spell,
     string? ServiceFilter = null,
-    string? LuidHex = null);
+    string? LuidHex = null,
+    bool NoWrap = false);
 
 internal sealed class IncantationException : Exception
 {
@@ -37,6 +38,7 @@ internal static class IncantationParser
 
         string? serviceFilter = null;
         string? luidHex = null;
+        bool noWrap = false;
 
         for (var index = 1; index < arguments.Count; index++)
         {
@@ -47,6 +49,9 @@ internal static class IncantationParser
                     break;
                 case "--luid":
                     luidHex = ReadSingleValue(arguments, ref index, luidHex, "--luid");
+                    break;
+                case "--nowrap":
+                    noWrap = true;
                     break;
                 case "--help":
                 case "-h":
@@ -66,7 +71,12 @@ internal static class IncantationParser
             throw new IncantationException("The accio spell does not accept --luid.");
         }
 
-        return new Incantation(spell, serviceFilter, luidHex);
+        if (spell == SpellName.Accio && noWrap)
+        {
+            throw new IncantationException("The accio spell does not accept --nowrap.");
+        }
+
+        return new Incantation(spell, serviceFilter, luidHex, noWrap);
     }
 
     private static string ReadSingleValue(

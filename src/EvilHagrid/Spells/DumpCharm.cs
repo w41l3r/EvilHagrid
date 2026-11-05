@@ -6,7 +6,7 @@ internal static class DumpCharm
 {
     private const int LineWidth = 100;
 
-    public static int Cast(IReadOnlyList<KirbiRecord> kirbis)
+    public static int Cast(IReadOnlyList<KirbiRecord> kirbis, bool noWrap = false)
     {
         if (kirbis.Count == 0)
         {
@@ -28,9 +28,16 @@ internal static class DumpCharm
             Console.WriteLine();
 
             var b64 = kirbi.Base64Kirbi;
-            for (var offset = 0; offset < b64.Length; offset += LineWidth)
+            if (noWrap)
             {
-                Console.WriteLine($"      {b64[offset..Math.Min(offset + LineWidth, b64.Length)]}");
+                Console.WriteLine($"      {b64}");
+            }
+            else
+            {
+                for (var offset = 0; offset < b64.Length; offset += LineWidth)
+                {
+                    Console.WriteLine($"      {b64[offset..Math.Min(offset + LineWidth, b64.Length)]}");
+                }
             }
         }
 

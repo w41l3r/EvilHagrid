@@ -28,7 +28,7 @@ internal static class SpellBook
             {
                 ParseLuid(incantation.LuidHex!, out var luidLow, out var luidHigh);
                 var kirbis = ledger.RetrieveEncodedTickets(luidLow, luidHigh, incantation.ServiceFilter);
-                return DumpCharm.Cast(kirbis);
+                return DumpCharm.Cast(kirbis, incantation.NoWrap);
             }
 
             return 1;
@@ -90,7 +90,8 @@ internal static class SpellBook
         Console.WriteLine("  aparecium   Dump the encoded ticket (base64 kirbi) for a specific LUID.");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --luid <0x...>    Hexadecimal LUID from triage output (dump only).");
+        Console.WriteLine("  --luid <0x...>    Hexadecimal LUID from accio output (aparecium only).");
         Console.WriteLine("  --service <text>  Filter tickets whose service name or realm matches text.");
+        Console.WriteLine("  --nowrap          Print base64 ticket as a single line (aparecium only).");
     }
 }
